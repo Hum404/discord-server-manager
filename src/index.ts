@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits } from 'discord.js';
 import { ConfigError, loadConfig } from './config.js';
 import { handleInteraction, logFailure, welcomeMember } from './bot.js';
 import { Store } from './store.js';
+import { registerCommands, resolveApplication } from './application.js';
 
 let client: Client | undefined;
 let store: Store | undefined;
@@ -38,14 +39,8 @@ try {
     allowedMentions: { parse: [], repliedUser: false },
   });
   client.once(Events.ClientReady, (ready) => {
-    if (ready.user.id !== config.clientId) {
-      console.error('DISCORD_CLIENT_ID 與登入機器人不符，請更正設定。');
-      void shutdown();
-      process.exitCode = 1;
-      return;
-    }
     console.log(`已登入 ${ready.user.tag}，目前服務 ${ready.guilds.cache.size} 個伺服器。`);
-    console.log('使用 /help 查看指令；首次啟動請先執行 npm run register。');
+    console.log('指令已自動註冊，使用 /help 查看說明。');
   });
   client.on(Events.InteractionCreate, (interaction) => {
     if (!stopping) track(handleInteraction(interaction, database));
@@ -58,7 +53,14 @@ try {
   client.on(Events.Warn, () => console.warn('Discord 發出連線警告，請檢查連線與伺服器設定。'));
   process.once('SIGINT', () => { void shutdown(); });
   process.once('SIGTERM', () => { void shutdown(); });
-  await client.login(config.token);
+  const rest = client.rest.setToken(config.token);
+  const application = await resolveApplication(rest);
+  if (!stopping) {
+    const count = await registerCommands(rest, application.id, config.guildId);
+    console.log(`已自動註冊 ${count} 個${config.guildId ? '伺服器' : '全域'}指令。`);
+    if (!config.guildId) console.log('全域指令可能需要一段時間才會顯示更新。');
+    if (!stopping) await client.login(config.token);
+  }
 } catch (error) {
   if (error instanceof ConfigError) console.error(error.message);
   else logFailure('機器人啟動失敗：請檢查 Token、Server Members Intent、資料路徑及網路連線', error);

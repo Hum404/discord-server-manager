@@ -8,16 +8,15 @@
 - Discord Application 與測試伺服器的管理權限。
 - 可持續執行 Node.js 的主機，以及保存 SQLite 資料的持久磁碟。
 
-此專案使用 Node.js 內建的 `node:sqlite`。Node.js 可能顯示 SQLite 實驗性功能提示，不影響本機資料庫的使用。啟動機器人需要自行設定 Discord Token；請勿把 Token 貼到聊天室或提交到 Git。
+此專案使用 Node.js 內建的 `node:sqlite`。Node.js 可能顯示 SQLite 實驗性功能提示，不影響本機資料庫的使用。**只需填入 Discord Bot Token**，程式便會自動取得 Application ID，並在啟動時註冊指令。Token 由 Discord Developer Portal 建立，無法透過本機終端機指令產生；請勿把 Token 貼到聊天室或提交到 Git。
 
 ## 1. 建立 Discord Application
 
 1. 前往 [Discord Developer Portal](https://discord.com/developers/applications)，建立 Application。
-2. 在 **General Information** 複製 **Application ID**。
-3. 在 **Bot** 頁面建立或重設 Token，安全保存。
-4. 在 **Bot → Privileged Gateway Intents** 開啟 **Server Members Intent**，讓機器人收到新成員加入事件。若 Discord 要求審核，需先取得此 Intent 的使用資格。
-5. 無須開啟 Message Content Intent 或 Presence Intent。
-6. 若要取得伺服器 ID，在 Discord 的 **使用者設定 → 進階** 開啟開發者模式，再右鍵伺服器選擇「複製伺服器 ID」。
+2. 在 **Bot** 頁面建立或重設 Token，安全保存；不需要複製 Application ID。
+3. 在 **Bot → Privileged Gateway Intents** 開啟 **Server Members Intent**，讓機器人收到新成員加入事件。若 Discord 要求審核，需先取得此 Intent 的使用資格。
+4. 無須開啟 Message Content Intent 或 Presence Intent。
+5. 選用測試伺服器時，可在 Discord 的 **使用者設定 → 進階** 開啟開發者模式，再右鍵伺服器選擇「複製伺服器 ID」。一般啟動不需要填伺服器 ID。
 
 ## 2. 安裝與設定
 
@@ -26,24 +25,25 @@ npm ci
 cp .env.example .env
 ```
 
-在本機編輯 `.env`：
+在本機編輯 `.env`，只需填入 `DISCORD_TOKEN`，其餘項目可保留預設值：
 
 | 變數 | 用途 |
 | --- | --- |
 | `DISCORD_TOKEN` | Bot Token，必填且保密。 |
-| `DISCORD_CLIENT_ID` | Application ID，機器人啟動、註冊指令及產生邀請網址時必填。 |
 | `DISCORD_GUILD_ID` | 測試伺服器 ID；填入時僅註冊到該伺服器，留空則註冊全域指令。 |
 | `DATABASE_PATH` | SQLite 路徑，預設為 `./data/bot.sqlite`。 |
 
+Application ID 一律由 Token 自動取得。舊版 `.env` 若有 `DISCORD_CLIENT_ID`，可直接保留，程式會忽略此變數，不會檢查或使用其值。
+
 相對資料庫路徑以啟動指令的目前目錄為基準。部署時請使用固定工作目錄或資料庫絕對路徑。
 
-## 3. 邀請機器人並註冊指令
+## 3. 邀請機器人
 
 ```sh
 npm run invite
 ```
 
-開啟輸出的 OAuth2 邀請網址，選擇目標伺服器。邀請範圍包含 `bot` 與 `applications.commands`。機器人需要下列功能權限，無須授予 Administrator：
+此指令會使用 Token 向 Discord 取得 Application ID，自動產生 OAuth2 邀請網址。開啟網址，選擇目標伺服器並授權。邀請範圍包含 `bot` 與 `applications.commands`。機器人需要下列功能權限，無須授予 Administrator：
 
 | 權限 | 用途 |
 | --- | --- |
@@ -54,12 +54,6 @@ npm run invite
 | Ban Members | 封鎖及解除封鎖。 |
 
 在 **伺服器設定 → 身分組** 中，將機器人的身分組放在它需要管理的成員身分組上方。頻道覆寫權限也必須允許機器人檢視頻道及執行對應操作。
-
-```sh
-npm run register
-```
-
-建議先填入 `DISCORD_GUILD_ID` 測試。伺服器指令通常很快生效；全域指令可能需要等待 Discord 更新。註冊會替換該 Application 在所選範圍的指令清單，請為此機器人使用獨立的 Application。改用其他註冊範圍不會自動移除先前範圍的指令。
 
 ## 4. 啟動
 
@@ -75,6 +69,10 @@ npm run dev
 npm run build
 npm start
 ```
+
+啟動時會先向 Discord 取得 Application 資料、自動註冊 Slash Commands，再連線 Gateway。無須另外執行指令註冊，也無須提供 Application ID 或伺服器 ID。
+
+預設註冊全域指令，Discord 更新可能需要等待。開發測試時可選填 `DISCORD_GUILD_ID`，讓指令僅註冊到該伺服器，通常更快生效。若要在未啟動機器人時單獨註冊，也可執行 `npm run register`。註冊會替換此 Application 在所選範圍的指令清單，請為此機器人使用獨立的 Application。改用其他註冊範圍不會自動移除先前範圍的指令。
 
 同一份 SQLite 資料庫請只啟動一個機器人程序。正式主機可使用 systemd 或其他程序管理工具維持執行，並將 `.env` 或主機環境變數安全提供給程序。請勿將 `.env` 放在可公開下載的網站目錄中。
 
@@ -136,7 +134,7 @@ npm run build
 
 ## 常見問題
 
-- **指令沒有出現：** 確認 Application ID 與 Bot Token 屬於同一個 Application、邀請包含 `applications.commands`，並重新執行 `npm run register`。檢查 `DISCORD_GUILD_ID` 是否是目前伺服器；全域指令可能仍在更新。
+- **指令沒有出現：** 確認機器人已成功啟動並完成自動註冊，且邀請包含 `applications.commands`。若有設定 `DISCORD_GUILD_ID`，確認是目前伺服器；全域指令可能仍在更新。也可執行 `npm run register` 手動重試。
 - **Missing Permissions 或無法管理某位成員：** 檢查機器人及操作者的功能權限、頻道覆寫權限，以及雙方的最高角色位置。
 - **歡迎訊息沒有出現：** 確認已設定歡迎頻道、開啟 Server Members Intent，且機器人能在該頻道發送訊息。
 - **Disallowed Intents：** 在 Developer Portal 開啟 Server Members Intent，再重新啟動。需要審核的 Application 必須先取得 Discord 核准。
