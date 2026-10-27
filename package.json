@@ -1,0 +1,26 @@
+{
+  "name": "discord-server-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "繁體中文 Discord 伺服器管理機器人",
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "node --watch --import tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "register": "node --import tsx src/register.ts",
+    "invite": "node --import tsx src/invite.ts",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --import tsx --test --test-isolation=none test/*.test.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
