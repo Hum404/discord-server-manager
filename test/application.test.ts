@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { InteractionContextType, Routes, type REST } from 'discord.js';
-import { registerCommands, resolveApplication } from '../src/application.js';
+import { registerCommands, registerDmAppeal, resolveApplication } from '../src/application.js';
 import { commands } from '../src/commands.js';
 import { ConfigError, parseConfig } from '../src/config.js';
 
@@ -75,7 +75,7 @@ test('a valid but stale legacy client ID does not block token-derived registrati
   assert.deepEqual(routes, [Routes.oauth2CurrentApplication(), Routes.applicationCommands(applicationId)]);
 });
 
-test('global registration keeps guild-only contexts and all serialized command definitions', async () => {
+test('global registration preserves command contexts including bot-DM appeals', async () => {
   const calls: { route: string; body: unknown }[] = [];
   const rest: Pick<REST, 'put'> = {
     put: async (route, options) => {
@@ -90,7 +90,11 @@ test('global registration keeps guild-only contexts and all serialized command d
   }]);
   const body = calls[0]?.body;
   assert.ok(Array.isArray(body));
-  for (const command of body) assert.deepEqual(command.contexts, [InteractionContextType.Guild]);
+  for (const command of body) {
+    assert.deepEqual(command.contexts, command.name === 'appeal'
+      ? [InteractionContextType.Guild, InteractionContextType.BotDM]
+      : [InteractionContextType.Guild]);
+  }
 });
 
 test('guild registration strips fields unsupported by the guild command endpoint', async () => {
@@ -151,4 +155,53 @@ test('token-only resolution supplies the application ID used for command registr
   const application = await resolveApplication(rest);
   assert.equal(await registerCommands(rest, application.id), commands.length);
   assert.deepEqual(routes, [Routes.oauth2CurrentApplication(), Routes.applicationCommands(applicationId)]);
+});
+
+test('DM appeal registration upserts one DM-only command without overwriting the global list', async () => {
+  const appeal = commands.find((command) => command.name === 'appeal');
+  assert.ok(appeal);
+  const original = appeal.toJSON();
+  const calls: { route: string; body: unknown }[] = [];
+  // This adapter deliberately exposes no PUT: using a bulk overwrite must fail.
+  const rest: Pick<REST, 'post'> = {
+    post: async (route, options) => {
+      calls.push({ route, body: options?.body });
+      return {};
+    },
+  };
+  assert.equal(await registerDmAppeal(rest, applicationId), undefined);
+  assert.deepEqual(calls, [{
+    route: Routes.applicationCommands(applicationId),
+    body: { ...original, contexts: [InteractionContextType.BotDM] },
+  }]);
+  assert.deepEqual(appeal.toJSON(), original, 'registering a DM copy must not mutate the shared builder');
+});
+
+test('DM appeal registration rejects invalid application IDs before making any POST', async () => {
+  let postCalls = 0;
+  const rest: Pick<REST, 'post'> = {
+    post: async () => {
+      postCalls += 1;
+      return {};
+    },
+  };
+  for (const id of ['', 'invalid-sensitive-id', '1234567890123456', '123456789012345678901', ` ${applicationId} `]) {
+    await assert.rejects(registerDmAppeal(rest, id), (error: unknown) => {
+      assert.ok(error instanceof ConfigError);
+      if (id) assert.ok(!error.message.includes(id));
+      return true;
+    });
+  }
+  assert.equal(postCalls, 0);
+});
+
+test('DM appeal registration accepts supported ID boundaries and propagates POST failures', async () => {
+  for (const id of ['12345678901234567', '12345678901234567890']) {
+    const routes: string[] = [];
+    await registerDmAppeal({ post: async (route) => { routes.push(route); return {}; } }, id);
+    assert.deepEqual(routes, [Routes.applicationCommands(id)]);
+  }
+  const failure = Object.assign(new Error('synthetic request failure'), { code: 50001 });
+  await assert.rejects(registerDmAppeal({ post: async () => { throw failure; } }, applicationId),
+    (error: unknown) => error === failure);
 });

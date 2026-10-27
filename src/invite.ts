@@ -15,6 +15,9 @@ try {
     PermissionFlagsBits.ModerateMembers,
     PermissionFlagsBits.KickMembers,
     PermissionFlagsBits.BanMembers,
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageRoles,
+    PermissionFlagsBits.MentionEveryone,
   ]);
   const url = new URL('https://discord.com/oauth2/authorize');
   url.searchParams.set('client_id', application.id);

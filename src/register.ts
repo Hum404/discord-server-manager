@@ -1,6 +1,6 @@
 import { REST } from 'discord.js';
 import { ConfigError, loadConfig } from './config.js';
-import { registerCommands, resolveApplication } from './application.js';
+import { registerCommands, registerDmAppeal, resolveApplication } from './application.js';
 
 try {
   const { token, guildId } = loadConfig();
@@ -8,7 +8,9 @@ try {
   const application = await resolveApplication(rest);
   const count = await registerCommands(rest, application.id, guildId);
   if (guildId) {
+    await registerDmAppeal(rest, application.id);
     console.log(`已將 ${count} 個斜線指令註冊至指定伺服器。`);
+    console.log('已另外註冊僅限私訊的申訴入口。');
   } else {
     console.log(`已註冊 ${count} 個全域斜線指令；Discord 可能需要一段時間才會顯示更新。`);
   }

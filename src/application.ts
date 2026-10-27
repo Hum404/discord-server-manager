@@ -1,4 +1,4 @@
-import { Routes, type REST } from 'discord.js';
+import { InteractionContextType, Routes, type REST } from 'discord.js';
 import { commands } from './commands.js';
 import { ConfigError } from './config.js';
 
@@ -32,4 +32,19 @@ export async function registerCommands(
     ? Routes.applicationGuildCommands(applicationId, guildId)
     : Routes.applicationCommands(applicationId), { body });
   return commands.length;
+}
+
+/** Guild-only deployments still need a global DM entry point for appeals. */
+export async function registerDmAppeal(
+  rest: Pick<REST, 'post'>,
+  applicationId: string,
+): Promise<void> {
+  if (!snowflake.test(applicationId)) {
+    throw new ConfigError('無法註冊私訊申訴指令：應用程式 ID 格式無效。');
+  }
+  const appeal = commands.find((command) => command.name === 'appeal');
+  if (!appeal) throw new ConfigError('找不到申訴指令，請更新完整程式後再試。');
+  await rest.post(Routes.applicationCommands(applicationId), {
+    body: { ...appeal.toJSON(), contexts: [InteractionContextType.BotDM] },
+  });
 }

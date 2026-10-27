@@ -2,7 +2,8 @@ import { Client, Events, GatewayIntentBits } from 'discord.js';
 import { ConfigError, loadConfig } from './config.js';
 import { handleInteraction, logFailure, welcomeMember } from './bot.js';
 import { Store } from './store.js';
-import { registerCommands, resolveApplication } from './application.js';
+import { registerCommands, registerDmAppeal, resolveApplication } from './application.js';
+import { handleSubareaChannelDelete, reconcileSubareaRestrictions } from './subareas.js';
 
 let client: Client | undefined;
 let store: Store | undefined;
@@ -41,12 +42,19 @@ try {
   client.once(Events.ClientReady, (ready) => {
     console.log(`已登入 ${ready.user.tag}，目前服務 ${ready.guilds.cache.size} 個伺服器。`);
     console.log('指令已自動註冊，使用 /help 查看說明。');
+    if (!stopping) track(reconcileSubareaRestrictions(ready, database));
   });
   client.on(Events.InteractionCreate, (interaction) => {
     if (!stopping) track(handleInteraction(interaction, database));
   });
   client.on(Events.GuildMemberAdd, (member) => {
     if (!stopping) track(welcomeMember(member, database));
+  });
+  client.on(Events.ChannelDelete, (channel) => {
+    if (!stopping && 'guild' in channel) {
+      try { handleSubareaChannelDelete(channel, database); }
+      catch (error) { logFailure('子區資料清理失敗', error); }
+    }
   });
   client.on(Events.Error, (error) => logFailure('Discord 連線錯誤', error));
   client.on(Events.ShardError, (error) => logFailure('Discord Gateway 錯誤', error));
@@ -57,6 +65,7 @@ try {
   const application = await resolveApplication(rest);
   if (!stopping) {
     const count = await registerCommands(rest, application.id, config.guildId);
+    if (config.guildId && !stopping) await registerDmAppeal(rest, application.id);
     console.log(`已自動註冊 ${count} 個${config.guildId ? '伺服器' : '全域'}指令。`);
     if (!config.guildId) console.log('全域指令可能需要一段時間才會顯示更新。');
     if (!stopping) await client.login(config.token);

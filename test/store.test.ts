@@ -42,6 +42,7 @@ test('guild settings and moderation history remain isolated', () => {
     assert.equal(store.listCases('guild-b').length, 0);
     assert.deepEqual({ ...store.getSettings('guild-b') }, {
       guildId: 'guild-b', logChannelId: null, welcomeChannelId: null, welcomeMessage: DEFAULT_WELCOME_MESSAGE,
+      appealChannelId: null, subareaCategoryId: null,
     });
     store.updateSettings('guild-a', { logChannelId: null });
     assert.equal(store.getSettings('guild-a').logChannelId, null);

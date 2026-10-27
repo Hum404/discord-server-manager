@@ -7,6 +7,7 @@ import { Store } from '../src/store.js';
 const ids = {
   guild: '100000000000000001', actor: '100000000000000002', bot: '100000000000000003',
   target: '100000000000000004', channel: '100000000000000005', interaction: '100000000000000006',
+  issuer: '100000000000000007', owner: '100000000000000008',
 };
 const fullPermissions = [
   PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory,
@@ -27,15 +28,24 @@ function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
   const actor = {
     id: ids.actor, permissions: new PermissionsBitField(fullPermissions), roles: { highest: { position: 10 } },
   };
+  const issuer = {
+    id: ids.issuer, permissions: new PermissionsBitField([PermissionFlagsBits.Administrator]),
+    roles: { highest: { position: 15 } },
+  };
   const bot = {
     id: ids.bot, permissions: new PermissionsBitField(fullPermissions), roles: { highest: { position: 20 } },
   };
-  const counters = { roleRefreshes: 0, actorRefreshes: 0, targetRefreshes: 0, kicks: 0, bans: 0, timeouts: 0 };
+  const counters = { roleRefreshes: 0, actorRefreshes: 0, targetRefreshes: 0, issuerRefreshes: 0,
+    notices: 0, kicks: 0, bans: 0, timeouts: 0 };
+  const events: string[] = [];
+  const state = { onConfirmation: () => {}, onNotify: () => {}, onKick: () => {}, onTargetFetch: (_refresh: number) => {} };
   const target = {
     id: ids.target, user: { id: ids.target, username: '測試成員', bot: false },
+    guild: { id: ids.guild, name: '測試伺服器' },
     permissions: new PermissionsBitField(), roles: { highest: { position: 1 } },
     kickable: true, bannable: true, manageable: true,
-    async kick() { counters.kicks += 1; },
+    async send() { counters.notices += 1; events.push('notice'); state.onNotify(); },
+    async kick() { counters.kicks += 1; events.push('kick'); state.onKick(); },
     async ban() { counters.bans += 1; },
     async timeout() { counters.timeouts += 1; },
   };
@@ -59,7 +69,6 @@ function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
       return new Map(selected.map((id) => [id, messages.get(id)]));
     },
   };
-  const state = { onConfirmation: () => {} };
   const message = {
     async awaitMessageComponent(options: { filter: (button: { user: { id: string }; customId: string }) => boolean }) {
       if (confirmation === 'timeout') throw { code: 'InteractionCollectorError' };
@@ -80,16 +89,22 @@ function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
     id: ids.interaction, commandName, guildId: ids.guild, channelId: ids.channel,
     user: { id: ids.actor }, deferred: false, replied: false,
     isChatInputCommand: () => true,
+    isButton: () => false,
+    isModalSubmit: () => false,
+    isRepliable: () => true,
+    inGuild: () => true,
     inCachedGuild: () => true,
     guild: {
-      ownerId: 'owner',
+      id: ids.guild, name: '測試伺服器', ownerId: ids.owner,
       roles: { async fetch() { counters.roleRefreshes += 1; } },
       members: {
         async fetch(options: { user: string; force: boolean }) {
           assert.equal(options.force, true);
           if (options.user === ids.actor) { counters.actorRefreshes += 1; return actor; }
+          if (options.user === ids.issuer) { counters.issuerRefreshes += 1; return issuer; }
           assert.equal(options.user, ids.target);
           counters.targetRefreshes += 1;
+          state.onTargetFetch(counters.targetRefreshes);
           return target;
         },
         async fetchMe() { return bot; },
@@ -107,7 +122,7 @@ function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
   };
   return {
     interaction: command as unknown as Interaction,
-    actor, counters, channel, messages, edits, deferOptions, deletedSnapshots, fetchLimits, state,
+    actor, issuer, target, counters, channel, messages, edits, deferOptions, deletedSnapshots, fetchLimits, state, events,
     finalReply: () => edits.at(-1) as Reply,
   };
 }
@@ -237,5 +252,165 @@ test('a completed kick is reported as completed when its local audit write fails
     assert.match(f.finalReply().content ?? '', /操作已完成，但本機管理紀錄寫入失敗/);
     assert.doesNotMatch(f.finalReply().content ?? '', /操作未能完成/);
     assert.equal(errors.mock.calls.length, 1);
+  } finally { store.close(); }
+});
+
+test('a delegated low-role member can warn an ordinary member using the active issuer authority', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('warn');
+    f.actor.permissions.remove(PermissionFlagsBits.ModerateMembers);
+    f.actor.roles.highest.position = f.target.roles.highest.position;
+    store.setGrant(ids.guild, ids.actor, 'warn', ids.issuer);
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.actor.permissions.has(PermissionFlagsBits.ModerateMembers), false);
+    assert.equal(store.countWarnings(ids.guild, ids.target), 1);
+    assert.equal(store.listCases(ids.guild)[0]?.moderatorId, ids.actor);
+    assert.equal(f.counters.notices, 1);
+    assert.ok(f.counters.issuerRefreshes >= 2);
+    assert.match(f.finalReply().content ?? '', /記錄警告/);
+  } finally { store.close(); }
+});
+
+for (const permission of [PermissionFlagsBits.Administrator, PermissionFlagsBits.ManageGuild]) {
+  test(`a management grant cannot punish a member protected by native permission ${permission}`, async () => {
+    const store = new Store(':memory:');
+    try {
+      const f = fixture('warn');
+      f.actor.permissions.remove(PermissionFlagsBits.ModerateMembers);
+      f.target.permissions.add(permission);
+      store.setGrant(ids.guild, ids.actor, 'warn', ids.issuer);
+      await handleInteraction(f.interaction, store);
+      assert.equal(store.countWarnings(ids.guild, ids.target), 0);
+      assert.deepEqual(store.listCases(ids.guild), []);
+      assert.equal(f.counters.notices, 0);
+      assert.match(f.finalReply().content ?? '', /管理授權不能用來處罰伺服器管理員/);
+    } finally { store.close(); }
+  });
+}
+
+test('a delegated action still respects the current issuer role ceiling', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('warn');
+    f.actor.permissions.remove(PermissionFlagsBits.ModerateMembers);
+    f.target.roles.highest.position = f.issuer.roles.highest.position;
+    store.setGrant(ids.guild, ids.actor, 'warn', ids.issuer);
+    await handleInteraction(f.interaction, store);
+    assert.equal(store.countWarnings(ids.guild, ids.target), 0);
+    assert.equal(f.counters.notices, 0);
+    assert.match(f.finalReply().content ?? '', /最高角色必須高於目標/);
+  } finally { store.close(); }
+});
+
+test('a grant revoked while the appeal DM is being delivered prevents the punishment and case', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('kick');
+    f.actor.permissions.remove(PermissionFlagsBits.KickMembers);
+    store.setGrant(ids.guild, ids.actor, 'kick', ids.issuer);
+    f.state.onNotify = () => { store.revokeGrant(ids.guild, ids.actor, 'kick'); };
+    await handleInteraction(f.interaction, store);
+    assert.deepEqual(f.events, ['notice']);
+    assert.equal(f.counters.kicks, 0);
+    assert.deepEqual(store.listCases(ids.guild), []);
+    assert.match(f.finalReply().content ?? '', /沒有.*權限|授權.*撤回/);
+  } finally { store.close(); }
+});
+
+test('a grant revoked during the final target refresh cannot authorize a kick', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('kick');
+    f.actor.permissions.remove(PermissionFlagsBits.KickMembers);
+    store.setGrant(ids.guild, ids.actor, 'kick', ids.issuer);
+    f.state.onTargetFetch = (refresh) => {
+      if (refresh === 3) store.revokeGrant(ids.guild, ids.actor, 'kick');
+    };
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.counters.notices, 1);
+    assert.equal(f.counters.kicks, 0);
+    assert.deepEqual(store.listCases(ids.guild), []);
+    assert.match(f.finalReply().content ?? '', /沒有.*權限|授權.*撤回/);
+  } finally { store.close(); }
+});
+
+test('a grant revoked after kick confirmation prevents even the punishment DM', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('kick');
+    f.actor.permissions.remove(PermissionFlagsBits.KickMembers);
+    store.setGrant(ids.guild, ids.actor, 'kick', ids.issuer);
+    f.state.onConfirmation = () => { store.revokeGrant(ids.guild, ids.actor, 'kick'); };
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.counters.notices, 0);
+    assert.equal(f.counters.kicks, 0);
+    assert.deepEqual(store.listCases(ids.guild), []);
+    assert.match(f.finalReply().content ?? '', /沒有.*權限|授權.*撤回/);
+  } finally { store.close(); }
+});
+
+test('a clear grant allows cleanup without native ManageMessages but unrelated grants do not', async () => {
+  const store = new Store(':memory:');
+  try {
+    const allowed = fixture('clear');
+    allowed.actor.permissions.remove(PermissionFlagsBits.ManageMessages);
+    store.setGrant(ids.guild, ids.actor, 'clear', ids.issuer);
+    await handleInteraction(allowed.interaction, store);
+    assert.deepEqual(allowed.deletedSnapshots, [['recent-one', 'recent-two']]);
+    assert.equal(store.listCases(ids.guild).length, 1);
+
+    store.revokeGrant(ids.guild, ids.actor, 'clear');
+    store.setGrant(ids.guild, ids.actor, 'warn', ids.issuer);
+    const denied = fixture('clear');
+    denied.actor.permissions.remove(PermissionFlagsBits.ManageMessages);
+    await handleInteraction(denied.interaction, store);
+    assert.deepEqual(denied.deletedSnapshots, []);
+    assert.deepEqual(denied.fetchLimits, []);
+    assert.equal(store.listCases(ids.guild).length, 1);
+    assert.match(denied.finalReply().content ?? '', /沒有.*權限/);
+  } finally { store.close(); }
+});
+
+for (const delegated of [false, true]) {
+  for (const required of [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]) {
+    test(`${delegated ? 'delegated' : 'native'} clear cannot operate without channel permission ${required}`, async () => {
+      const store = new Store(':memory:');
+      try {
+        const f = fixture('clear');
+        f.actor.permissions.remove(required);
+        if (delegated) {
+          f.actor.permissions.remove(PermissionFlagsBits.ManageMessages);
+          store.setGrant(ids.guild, ids.actor, 'clear', ids.issuer);
+        }
+        await handleInteraction(f.interaction, store);
+        assert.deepEqual(f.fetchLimits, []);
+        assert.deepEqual(f.deletedSnapshots, []);
+        assert.deepEqual(store.listCases(ids.guild), []);
+        assert.match(f.finalReply().content ?? '', /缺少.*權限/);
+      } finally { store.close(); }
+    });
+  }
+}
+
+test('the appeal DM is delivered before a kick and the case is recorded only after success', async (context) => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('kick');
+    const addCase = store.addCase.bind(store);
+    context.mock.method(store, 'addCase', (input: Parameters<Store['addCase']>[0]) => {
+      f.events.push('case');
+      assert.equal(f.counters.kicks, 1);
+      return addCase(input);
+    });
+    f.state.onNotify = () => {
+      assert.equal(f.counters.kicks, 0);
+      assert.deepEqual(store.listCases(ids.guild), []);
+    };
+    f.state.onKick = () => { assert.deepEqual(store.listCases(ids.guild), []); };
+    await handleInteraction(f.interaction, store);
+    assert.deepEqual(f.events, ['notice', 'kick', 'case']);
+    assert.equal(store.listCases(ids.guild)[0]?.action, 'kick');
+    assert.match(f.finalReply().content ?? '', /已將.*踢出伺服器/);
   } finally { store.close(); }
 });
