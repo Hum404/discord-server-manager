@@ -143,7 +143,7 @@ function fixture(store: Store, action: string, registered = true) {
     options: {
       getSubcommand: () => state.action,
       getUser: () => target.user,
-      getString: (name: string) => name === 'type' ? null : name === 'name' ? '我的子區' : name === 'reason' ? '請遵守子區規則' : name === 'audience' ? 'everyone' : state.message,
+      getString: (name: string) => name === 'type' || name === 'channel-id' ? null : name === 'name' ? '我的子區' : name === 'reason' ? '請遵守子區規則' : name === 'audience' ? 'everyone' : state.message,
       getRole: () => ({ id: ids.role }),
       getChannel: () => channel,
     },

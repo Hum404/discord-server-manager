@@ -23,6 +23,7 @@ const actionLabels: Record<string, string> = {
 export async function record(
   command: ChatInputCommandInteraction<'cached'> | MessageContextMenuCommandInteraction<'cached'>, store: Store,
   action: string, userId: string | null, reason: string, details?: string,
+  targetChannelId?: string,
 ): Promise<string> {
   let caseNumber: number;
   try {
@@ -45,7 +46,7 @@ export async function record(
       .setTitle(`本服案件 #${caseNumber} · ${actionLabels[action] ?? action}`)
       .addFields(
         { name: '執行者', value: `<@${command.user.id}>（${command.user.id}）` },
-        { name: '對象', value: userId ? `<@${userId}>（${userId}）` : `<#${command.channelId}>` },
+        { name: '對象', value: userId ? `<@${userId}>（${userId}）` : `<#${targetChannelId ?? command.channelId}>` },
         { name: '原因', value: truncate(escapeMarkdown(reason), 1024) },
       ).setTimestamp();
     if (details) embed.addFields({ name: '詳細內容', value: truncate(escapeMarkdown(details), 1024) });

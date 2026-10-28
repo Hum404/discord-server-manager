@@ -34,8 +34,8 @@ function botPermissions(bot: GuildMember, channel: GuildBasedChannel, flags: big
 }
 
 /** Existing human-created posts need no administrator registration command. */
-export async function ensureThreadArea(command: AreaInteraction, store: Store): Promise<void> {
-  const channel = await command.guild.channels.fetch(command.channelId, { force: true });
+export async function ensureThreadArea(command: AreaInteraction, store: Store, channelId = command.channelId): Promise<void> {
+  const channel = await command.guild.channels.fetch(channelId, { force: true });
   if (!isSubareaThread(channel) || channel.guildId !== command.guildId
     || store.getSubarea(command.guildId, channel.id) || !channel.ownerId) return;
   let owner: GuildMember;
@@ -337,34 +337,48 @@ export async function createThreadSubarea(command: Command, store: Store): Promi
   });
 }
 
-async function mutedMember(channel: ThreadChannel, userId: string, store: Store): Promise<GuildMember | null> {
+type ReactiveRestriction = { member: GuildMember; muted: boolean; locked: boolean };
+
+async function restrictedMember(channel: ThreadChannel, userId: string, store: Store): Promise<ReactiveRestriction | null> {
   const area = store.getSubarea(channel.guildId, channel.id);
   const restriction = store.getSubareaRestriction(channel.guildId, channel.id, userId);
-  if (!area || area.ownerId === userId || !restriction?.muted) return null;
+  const locked = store.getSubareaLock(channel.guildId, channel.id) !== null;
+  if (!area || area.ownerId === userId || (!restriction?.muted && !locked)) return null;
   let member: GuildMember;
-  try { member = await channel.guild.members.fetch({ user: userId, force: true }); }
-  catch (error) {
+  try {
+    // GuildMember.permissions reads role objects from the guild cache. Refresh both
+    // records before deciding whether a now-promoted moderator is exempt.
+    await channel.guild.roles.fetch();
+    member = await channel.guild.members.fetch({ user: userId, force: true });
+  } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 10007) return null;
     throw error;
   }
   if (member.user.bot || member.id === channel.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator)
     || member.permissions.has(PermissionFlagsBits.ManageGuild)) return null;
   const current = store.getSubarea(channel.guildId, channel.id);
-  return current && current.ownerId !== userId && store.getSubareaRestriction(channel.guildId, channel.id, userId)?.muted ? member : null;
+  const muted = store.getSubareaRestriction(channel.guildId, channel.id, userId)?.muted === true;
+  const stillLocked = store.getSubareaLock(channel.guildId, channel.id) !== null;
+  if (!current || current.ownerId === userId || (!muted && !stillLocked)) return null;
+  return { member, muted, locked: stillLocked };
 }
 
 export async function handleSubareaThreadMessage(message: Message, store: Store): Promise<void> {
   if (message.author.bot || !message.guild || !isSubareaThread(message.channel)) return;
   try {
-    const member = await mutedMember(message.channel, message.author.id, store);
-    if (!member) return;
+    const restriction = await restrictedMember(message.channel, message.author.id, store);
+    if (!restriction) return;
+    const { member } = restriction;
     await message.delete();
     const key = `${message.guild.id}:${message.channel.id}:${member.id}`;
     const now = Date.now();
     if (now - (lastNotice.get(key) ?? 0) >= 60_000) {
       lastNotice.set(key, now);
       if (lastNotice.size > 2000) for (const [saved, time] of lastNotice) if (now - time >= 60_000) lastNotice.delete(saved);
-      try { await member.send({ content: `你目前在子區 <#${message.channel.id}> 被禁言，新訊息已刪除。其他頻道不受影響；可使用 /appeal 提交處罰申訴。`, allowedMentions: noMentions }); }
+      const explanation = restriction.muted
+        ? `你目前在子區 <#${message.channel.id}> 被禁言，新訊息已刪除。其他頻道不受影響；可使用 /appeal 提交處罰申訴。`
+        : `子區 <#${message.channel.id}> 已鎖定，只有建立者與管理員可發言；你的新訊息已刪除。其他頻道不受影響。`;
+      try { await member.send({ content: explanation, allowedMentions: noMentions }); }
       catch (error) { logFailure('討論串禁言提示私訊失敗', error); }
     }
   } catch (error) { logFailure('討論串禁言訊息處理失敗', error); }
@@ -375,7 +389,7 @@ export async function handleSubareaThreadReaction(
 ): Promise<void> {
   if (user.bot || !reaction.message.guild || !isSubareaThread(reaction.message.channel)) return;
   try {
-    if (!await mutedMember(reaction.message.channel, user.id, store)) return;
+    if (!await restrictedMember(reaction.message.channel, user.id, store)) return;
     await reaction.users.remove(user.id);
   } catch (error) { logFailure('討論串禁言反應處理失敗', error); }
 }

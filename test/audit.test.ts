@@ -83,6 +83,18 @@ test('configured logs publish only to the invoking guild and display its local c
   });
 });
 
+test('outside-channel recovery logs the selected target rather than the invocation channel', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    const targetChannelId = '510000000000000007';
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    await record(a.command, store, 'subarea-unlock', null, '解除子區鎖定', `子區 ${targetChannelId}`, targetChannelId);
+    const fields = a.sent[0]?.embeds[0]?.toJSON().fields;
+    assert.equal(fields?.find((field) => field.name === '對象')?.value, `<#${targetChannelId}>`);
+    assert.equal(store.listCases(ids.guildA)[0]?.details, `子區 ${targetChannelId}`);
+  });
+});
+
 test('a foreign-guild channel is rejected before any management content is sent', async () => {
   await withStore(async (store) => {
     const a = fixture(ids.guildA, ids.channelA);

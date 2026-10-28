@@ -302,6 +302,25 @@ test('local tools distinguish message pinning, slowmode and delegate targets', (
   assert.match(getOption('subarea', 'tag').description, /提及/);
 });
 
+test('lock and unlock accept optional text or thread targets for recovery from another channel', () => {
+  for (const action of ['lock', 'unlock']) {
+    const channel = getSubOption('subarea', action, 'channel');
+    assert.ok(channel.type === ApplicationCommandOptionType.Channel);
+    assert.notEqual(channel.required, true, 'omission must preserve current-area operations');
+    assert.deepEqual(channel.channel_types, [ChannelType.GuildText, ChannelType.PublicThread,
+      ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
+    const fallback = getSubOption('subarea', action, 'channel-id');
+    assert.ok(fallback.type === ApplicationCommandOptionType.String);
+    assert.notEqual(fallback.required, true);
+    assert.equal(fallback.min_length, 17);
+    assert.equal(fallback.max_length, 200);
+    assert.match(getOption('subarea', action).description, /其他頻道/);
+  }
+  assert.equal(allCommands.length, 17);
+  assert.equal(messageCommands.length, 2);
+  assert.ok(messageCommands.every((command) => command.toJSON().type === ApplicationCommandType.Message));
+});
+
 test('administrator operations bound case IDs, native-management inputs and editable channel types', () => {
   assert.deepEqual(getCommand('admin').options?.map((option) => option.name).sort(),
     ['cases', 'case', 'warning-remove', 'role-add', 'role-remove', 'channel-edit'].sort());

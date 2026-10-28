@@ -357,8 +357,20 @@ export const commands = [
         .addStringOption((option) => option.setName('name').setDescription('新的子區名稱')
           .setMinLength(1).setMaxLength(80).setRequired(true)),
     )
-    .addSubcommand((subcommand) => subcommand.setName('lock').setDescription('鎖定子區；討論串會一併封存'))
-    .addSubcommand((subcommand) => subcommand.setName('unlock').setDescription('解鎖子區；討論串會解除封存'))
+    .addSubcommand((subcommand) =>
+      subcommand.setName('lock').setDescription('鎖定子區並保留建立者操作；可從其他頻道指定子區')
+        .addChannelOption((option) => option.setName('channel').setDescription('要鎖定的子區；留空使用目前子區')
+          .addChannelTypes(ChannelType.GuildText, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread))
+        .addStringOption((option) => option.setName('channel-id').setDescription('子區 ID 或 Discord 連結；與 channel 擇一填寫')
+          .setMinLength(17).setMaxLength(200)),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName('unlock').setDescription('解鎖子區；無法在區內操作時可從其他頻道指定子區')
+        .addChannelOption((option) => option.setName('channel').setDescription('要解鎖的子區；留空使用目前子區')
+          .addChannelTypes(ChannelType.GuildText, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread))
+        .addStringOption((option) => option.setName('channel-id').setDescription('子區 ID 或 Discord 連結；與 channel 擇一填寫')
+          .setMinLength(17).setMaxLength(200)),
+    )
     .addSubcommand((subcommand) => subcommand.setName('delete').setDescription('僅目前建立者可刪除自己的子區，須兩次確認'))
     .addSubcommand((subcommand) =>
       subcommand.setName('delegate').setDescription('建立者或管理員授予成員目前子區的協管權限')

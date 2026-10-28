@@ -12,7 +12,7 @@ import { truncate } from './presentation.js';
 import { Store, type Subarea, type SubareaRestriction } from './store.js';
 import {
   handleSubareaTools, lockAwareRestrictionBaseline, managedAreaOperation,
-  overlaySubareaLock,
+  overlaySubareaLock, resolveSubareaLockTarget,
 } from './subarea-tools.js';
 import { createThreadSubarea, ensureThreadArea, handleThreadSubarea } from './subarea-threads.js';
 
@@ -420,7 +420,8 @@ export async function handleSubareaCommand(command: Command, store: Store): Prom
     if (kind !== null && kind !== 'text') throw new UserError('請選擇文字頻道、討論串或論壇帖子。');
     return createArea(command, store);
   }
-  await ensureThreadArea(command, store);
+  const managementTarget = action === 'lock' || action === 'unlock' ? resolveSubareaLockTarget(command) : command.channelId;
+  await ensureThreadArea(command, store, managementTarget);
   if (await handleSubareaTools(command, store)) return;
   if (await handleThreadSubarea(command, store)) return;
   if (action === 'assign') return assignArea(command, store);

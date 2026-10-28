@@ -57,7 +57,7 @@ npm run invite
 | Ban Members | 封鎖及解除封鎖。 |
 | Manage Channels、Manage Roles | 建立文字子區、設定與還原頻道內的成員權限。 |
 | Mention Everyone | 讓子區建立者透過 Bot 發送身分組及 everyone／here 通知。 |
-| Manage Threads、Send Messages in Threads、Create Public Threads、Create Private Threads | 建立及管理討論串與論壇帖子、鎖定／封存及移除討論串成員。 |
+| Manage Threads、Send Messages in Threads、Create Public Threads、Create Private Threads | 建立及管理討論串與論壇帖子、解除舊版封存鎖定及移除討論串成員。 |
 | Add Reactions | 子區互動所需的反應權限。 |
 
 在 **伺服器設定 → 身分組** 中，將機器人的身分組放在它需要管理的成員身分組上方。頻道覆寫權限也必須允許機器人檢視頻道及執行對應操作。
@@ -149,7 +149,7 @@ npm run commands:sync
 | `/subarea delete-message message` | 刪除目前子區的指定訊息。 | 該子區建立者、協管或原生 Administrator |
 | `/subarea slowmode seconds` | 設定 0 至 21,600 秒慢速模式，0 為關閉。 | 該子區建立者、協管或原生 Administrator |
 | `/subarea rename name` | 修改目前子區名稱。 | 該子區建立者、協管或原生 Administrator |
-| `/subarea lock`、`/subarea unlock` | 鎖定／解鎖；討論串鎖定會一併封存。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea lock [channel] [channel-id]`、`/subarea unlock [channel] [channel-id]` | 鎖定／解鎖並保留建立者操作；可從其他頻道指定子區，兩種目標擇一填寫。 | 該子區建立者、協管或原生 Administrator |
 | `/subarea delete` | 經兩次確認後刪除自己的子區。 | 僅目前子區建立者 |
 | `/subarea delegate user`、`/subarea undelegate user` | 授予／撤回目前子區協管。 | 該子區建立者或原生 Administrator |
 | `/subarea delegates`、`/subarea info` | 查看協管及子區管理資訊。 | 該子區建立者、協管或原生 Administrator |
@@ -300,7 +300,31 @@ Bot 授權不包含再次授權別人、修改伺服器設定或審核申訴。�
 /subarea unlock
 ```
 
-文字頻道鎖定會保存原有權限，禁止一般成員發言，並保留 Bot／目前建立者的管理能力。解鎖時還原受管理的權限項目，保留其他權限變動和仍有效的個別成員限制；原生 Administrator 依 Discord 規則可繞過頻道限制。討論串鎖定採用 Discord 的鎖定及封存，解鎖會解除封存。建立者使用 `/subarea delete` 須完成兩次限時確認，刪除無法還原。
+文字頻道鎖定會保存原有權限，禁止一般成員發言，並明確保留 Bot／目前建立者的查看頻道、讀取歷史、發言及使用應用程式指令權限，讓建立者仍能解鎖。這些權限只限該頻道，不會授予建立者 Administrator、Manage Roles 或 Manage Threads。解鎖時還原受管理的權限項目，保留其他權限變動和仍有效的個別成員限制；原生 Administrator 依 Discord 規則可繞過頻道限制。文字頻道的原生權限限制在 Bot 離線時仍有效。
+
+Discord 的討論串原生封存／鎖定會同時阻止帖主發言，無法只讓建立者例外。因此討論串／論壇帖子改由 Bot 保存鎖定狀態：Bot 在線時刪除一般成員的新訊息及新增反應，建立者、Bot、原生 Administrator 或 Manage Server 管理者仍可發言。此機制不封存帖子、不修改父頻道權限，也不授予建立者 Manage Threads；訊息可能短暫出現，Bot 離線時無法執行這項限制。原有個別禁言仍會保留。
+
+若已被舊版鎖住、無法在子區內執行指令，更新並啟動新版後，可在同一伺服器的其他可用文字頻道指定目標解鎖：
+
+```text
+/subarea unlock channel:目標子區
+```
+
+若已封存帖子沒有出現在頻道選單，可填入該帖子的 ID、Discord 頻道連結或帖內訊息連結：
+
+```text
+/subarea unlock channel-id:帖子ID或連結
+```
+
+也可以從其他頻道鎖定自己有權管理的子區；`channel` 與 `channel-id` 擇一填寫，兩者都省略時仍操作目前子區：
+
+```text
+/subarea lock channel:目標子區
+```
+
+指定目標仍會檢查該子區的建立者／協管／管理員、查看權限及私密討論串成員資格，不能藉其他頻道操作不屬於自己的子區。新版啟動會修復已保存的文字鎖定中，建立者缺少的發言與應用程式指令權限；舊版被封存鎖定的討論串則可透過上述 `unlock channel` 解除封存與鎖定。更新沿用原本 Token 與資料，不需要重新填設定或替建立者新增管理身分組。
+
+建立者使用 `/subarea delete` 須完成兩次限時確認，刪除無法還原。
 
 私密討論串會另外確認操作者仍是該討論串的成員；只具備父頻道的查看權限不足以使用子區管理功能。原生具有該頻道 Manage Threads 權限的管理人員依 Discord 規則可存取私密討論串。文字子區鎖定時請先解鎖，再轉移建立者。
 
@@ -404,7 +428,7 @@ Bot 授權不包含再次授權別人、修改伺服器設定或審核申訴。�
 
 ### 資料與紀錄
 
-設定、警告、管理授權、申訴工單、子區建立者、協管、文字頻道鎖定快照與限制狀態都保存在 SQLite，重新啟動後仍會保留，各伺服器資料分開查詢。首次啟動新版時會自動新增資料表及設定欄位，保留舊的警告、案件與設定。文字子區限制同時保存在 Discord 頻道覆寫中，不依賴 Bot 持續在線才生效；討論串禁言依賴 Bot 在線接收事件。
+設定、警告、管理授權、申訴工單、子區建立者、協管、鎖定狀態、文字頻道鎖定快照與限制狀態都保存在 SQLite，重新啟動後仍會保留，各伺服器資料分開查詢。首次啟動新版時會自動新增資料表及設定欄位，保留舊的警告、案件與設定。文字子區限制同時保存在 Discord 頻道覆寫中，不依賴 Bot 持續在線才生效；討論串鎖定與禁言依賴 Bot 在線接收事件。
 
 管理紀錄頻道是額外通知；頻道被刪除或失去發送權限時，通知失敗不代表已成功的管理操作會撤回。也可透過 Discord 原生稽核紀錄查看 Discord 支援的管理操作。
 

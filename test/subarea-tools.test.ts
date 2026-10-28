@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChannelType, Collection, OverwriteType, PermissionFlagsBits as P, PermissionsBitField, type ChatInputCommandInteraction } from 'discord.js';
-import { handleSubareaTools, parseSubareaMessage, lockAwareRestrictionBaseline, overlaySubareaLock, LOCK_PERMISSION_BITS, managedAreaOperation } from '../src/subarea-tools.js';
+import { ChannelType, Collection, OverwriteType, PermissionFlagsBits as P, PermissionsBitField, type ChatInputCommandInteraction, type Client } from 'discord.js';
+import { handleSubareaTools, parseSubareaMessage, lockAwareRestrictionBaseline, overlaySubareaLock, LOCK_PERMISSION_BITS, managedAreaOperation, reconcileSubareaLocks, resolveSubareaLockTarget } from '../src/subarea-tools.js';
 import { Store } from '../src/store.js';
+import { handleSubareaCommand } from '../src/subareas.js';
 
 const id = { guild: '400000000000000001', actor: '400000000000000002', bot: '400000000000000003',
   channel: '400000000000000004', target: '400000000000000005', admin: '400000000000000006',
@@ -13,10 +14,12 @@ function fixture(store: Store, action: string, thread = false) {
   const state = { action, actorId: id.actor, message: id.message, name: '新名稱', seconds: 10,
     onFetch: () => {}, onConfirm: (_stage: number) => {}, confirmations: [true, true], confirmationCount: 0,
     privateMembers: new Set<string>([id.actor, id.target]), onPrivateFetch: (_userId: string) => {},
+    invokingChannelId: id.channel, selectedChannelId: null as string | null, onChannelFetch: (_channelId: string) => {},
+    channelIdInput: null as string | null,
     failSet: false, failedSet: false, endpointDeleted: false };
   const replies: Payload[] = [];
-  const counters = { pin: 0, unpin: 0, deleteMessage: 0, deleteChannel: 0, set: 0, edits: 0 };
-  const base = P.ViewChannel | P.ReadMessageHistory | P.SendMessages | P.SendMessagesInThreads | P.AddReactions;
+  const counters = { pin: 0, unpin: 0, deleteMessage: 0, deleteChannel: 0, set: 0, edits: 0, outsideWrites: 0 };
+  const base = P.ViewChannel | P.ReadMessageHistory | P.SendMessages | P.SendMessagesInThreads | P.AddReactions | P.UseApplicationCommands;
   const members = new Map<string, { id: string; permissions: PermissionsBitField; user: { id: string; bot: boolean }; guild: { ownerId: string } }>();
   function member(userId: string, permissions: bigint = base, bot = false) {
     const value = { id: userId, permissions: new PermissionsBitField(permissions), user: { id: userId, bot }, guild: { ownerId: id.admin } };
@@ -32,6 +35,7 @@ function fixture(store: Store, action: string, thread = false) {
     async pin() { counters.pin++; }, async unpin() { counters.unpin++; }, async delete() { counters.deleteMessage++; } };
   const channel = {
     id: id.channel, guildId: id.guild, type: thread ? ChannelType.PublicThread : ChannelType.GuildText,
+    ownerId: id.actor,
     guild: { id: id.guild, ownerId: id.admin },
     locked: false, archived: false, rateLimitPerUser: 0,
     members: { async fetch(options: { member: string; force: boolean; cache: boolean }) {
@@ -46,6 +50,7 @@ function fixture(store: Store, action: string, thread = false) {
       for (const entry of [cache.get(id.guild), cache.get(subject.id)]) if (entry) {
         permissions.remove(entry.deny.bitfield); permissions.add(entry.allow.bitfield);
       }
+      if (!permissions.has(P.ViewChannel)) permissions.remove([P.SendMessages, P.SendMessagesInThreads, P.UseApplicationCommands]);
       return permissions;
     },
     permissionOverwrites: { cache,
@@ -63,16 +68,25 @@ function fixture(store: Store, action: string, thread = false) {
     async edit(options: { locked: boolean; archived: boolean }) { channel.locked = options.locked; channel.archived = options.archived; counters.edits++; },
     async delete() { counters.deleteChannel++; state.endpointDeleted = true; },
   };
+  const outsideCache = new Collection<string, Overwrite>();
+  const outside = {
+    id: id.other, guildId: id.guild, type: ChannelType.GuildText,
+    guild: { id: id.guild, ownerId: id.admin },
+    permissionsFor(subject: { permissions: PermissionsBitField }) { return new PermissionsBitField(subject.permissions.bitfield); },
+    permissionOverwrites: { cache: outsideCache, async set() { counters.outsideWrites++; } },
+  };
+  const channels = new Map<string, typeof channel | typeof outside>([[channel.id, channel], [outside.id, outside]]);
   const guild = { id: id.guild, ownerId: id.admin,
     roles: { async fetch() {} }, members: {
       async fetch(options: { user: string }) { const result = members.get(options.user); assert.ok(result); return result; },
       async fetchMe() { return bot; },
-    }, channels: { async fetch(channelId: string) { assert.equal(channelId, id.channel); return channel; } } };
+    }, channels: { async fetch(channelId: string) { state.onChannelFetch(channelId); return channels.get(channelId) ?? null; } } };
   const command = {
-    id: '400000000000000010', guild, guildId: id.guild, channelId: id.channel,
+    id: '400000000000000010', guild, guildId: id.guild, get channelId() { return state.invokingChannelId; },
     get user() { return { id: state.actorId }; },
-    options: { getSubcommand: () => state.action, getString: (name: string) => name === 'message' ? state.message : state.name,
-      getInteger: () => state.seconds, getUser: () => target.user },
+    options: { getSubcommand: () => state.action, getString: (name: string) => name === 'channel-id' ? state.channelIdInput : name === 'message' ? state.message : state.name,
+      getInteger: () => state.seconds, getUser: () => target.user,
+      getChannel: () => state.selectedChannelId === null ? null : channels.get(state.selectedChannelId) ?? null },
     async editReply(payload: Payload) {
       if (state.endpointDeleted) throw Object.assign(new Error('Unknown Channel'), { code: 10003 });
       replies.push(payload);
@@ -89,7 +103,7 @@ function fixture(store: Store, action: string, thread = false) {
     },
   } as unknown as ChatInputCommandInteraction<'cached'>;
   store.setSubarea(id.guild, id.channel, id.actor);
-  return { state, counters, channel, actor, bot, target, admin, command, replies, cache, overwrite };
+  return { state, counters, channel, outside, channels, guild, actor, bot, target, admin, command, replies, cache, overwrite };
 }
 function withStore(run: (store: Store) => Promise<void> | void) {
   return async () => { const store = new Store(':memory:'); try { await run(store); } finally { store.close(); } };
@@ -206,10 +220,12 @@ test('failed text lock rolls back durable record and original overwrites', withS
   assert.equal(f.cache.has(id.guild), false);
 }));
 
-test('thread locking uses native archive and lock without replacing channel overwrites', withStore(async (store) => {
+test('thread locking preserves an active owner interface without replacing parent overwrites', withStore(async (store) => {
   const f = fixture(store, 'lock', true); await handleSubareaTools(f.command, store);
-  assert.equal(f.channel.locked, true); assert.equal(f.channel.archived, true); assert.equal(f.counters.set, 0);
+  assert.equal(f.channel.locked, false); assert.equal(f.channel.archived, false); assert.equal(f.counters.set, 0);
+  assert.ok(store.getSubareaLock(id.guild, id.channel));
   f.state.action = 'unlock'; await handleSubareaTools(f.command, store); assert.equal(f.channel.locked, false); assert.equal(f.channel.archived, false);
+  assert.equal(store.getSubareaLock(id.guild, id.channel), null);
 }));
 
 test('deleting an area requires two confirmations and tolerates invalidated reply endpoint', withStore(async (store) => {
@@ -271,4 +287,105 @@ test('native administrators can manage private-thread messages without joining',
   f.state.actorId = id.admin;
   await handleSubareaTools(f.command, store);
   assert.equal(f.counters.deleteMessage, 1);
+}));
+
+test('text lock preserves creator posting and application commands despite an everyone deny', withStore(async (store) => {
+  const f = fixture(store, 'lock');
+  f.state.invokingChannelId = id.other;
+  f.state.selectedChannelId = id.channel;
+  const denied = P.SendMessages | P.SendMessagesInThreads | P.UseApplicationCommands;
+  f.overwrite(id.guild, 0n, denied, OverwriteType.Role);
+  assert.equal(f.channel.permissionsFor(f.actor).has(P.SendMessages), false);
+  await handleSubareaTools(f.command, store);
+  const ownerPermissions = f.channel.permissionsFor(f.actor);
+  assert.equal(ownerPermissions.has([P.ViewChannel, P.ReadMessageHistory, P.SendMessages, P.SendMessagesInThreads, P.UseApplicationCommands]), true);
+  assert.equal(ownerPermissions.has(P.Administrator), false);
+  assert.equal(ownerPermissions.has(P.ManageRoles), false);
+  assert.equal(ownerPermissions.has(P.ManageThreads), false);
+  assert.equal(f.channel.permissionsFor(f.target).has(P.SendMessages), false);
+  assert.equal(f.counters.outsideWrites, 0);
+  f.state.action = 'unlock';
+  await handleSubareaTools(f.command, store);
+  assert.equal(f.cache.has(id.actor), false, 'temporary creator control overwrite is removed');
+  assert.equal(f.channel.permissionsFor(f.actor).has(P.UseApplicationCommands), false, 'the original command deny is restored');
+  assert.equal(f.cache.get(id.guild)?.deny.bitfield, denied);
+}));
+
+test('startup reconciliation repairs creator control access for a saved older text lock', withStore(async (store) => {
+  const f = fixture(store, 'lock');
+  store.setSubareaLock(id.guild, id.channel, '[]', id.actor);
+  f.overwrite(id.guild, 0n, P.SendMessages | P.UseApplicationCommands, OverwriteType.Role);
+  f.overwrite(id.actor, 0n, P.SendMessages);
+  assert.equal(f.channel.permissionsFor(f.actor).has(P.SendMessages), false);
+  const client = { user: { id: id.bot }, guilds: { async fetch() { return f.guild; } } } as unknown as Client;
+  await reconcileSubareaLocks(client, store);
+  assert.equal(f.channel.permissionsFor(f.actor).has([P.SendMessages, P.UseApplicationCommands]), true);
+  assert.equal(f.channel.permissionsFor(f.target).has(P.SendMessages), false);
+  assert.ok(store.getSubareaLock(id.guild, id.channel));
+}));
+
+test('outside-channel unlock restores only the selected registered text area', withStore(async (store) => {
+  const f = fixture(store, 'lock');
+  await handleSubareaTools(f.command, store);
+  f.state.action = 'unlock'; f.state.invokingChannelId = id.other; f.state.selectedChannelId = id.channel;
+  await handleSubareaCommand(f.command, store);
+  assert.equal(store.getSubareaLock(id.guild, id.channel), null);
+  assert.equal(f.counters.outsideWrites, 0);
+  assert.match(f.replies.at(-1)?.content ?? '', new RegExp(id.channel));
+  assert.equal(store.listCases(id.guild)[0]?.action, 'subarea-unlock');
+}));
+
+test('outside recovery can adopt and unlock a legacy archived human thread using its link', withStore(async (store) => {
+  const f = fixture(store, 'unlock', true);
+  store.deleteSubarea(id.guild, id.channel);
+  f.channel.locked = true; f.channel.archived = true;
+  f.state.invokingChannelId = id.other;
+  f.state.channelIdInput = `https://discord.com/channels/${id.guild}/${id.channel}/${id.message}`;
+  await handleSubareaCommand(f.command, store);
+  assert.equal(store.getSubarea(id.guild, id.channel)?.ownerId, id.actor);
+  assert.equal(f.channel.locked, false); assert.equal(f.channel.archived, false);
+  assert.equal(f.counters.edits, 1); assert.equal(f.counters.outsideWrites, 0);
+}));
+
+test('outside unlock still rejects another creator and a revoked local delegate', withStore(async (store) => {
+  const f = fixture(store, 'unlock');
+  f.state.invokingChannelId = id.other; f.state.selectedChannelId = id.channel;
+  store.setSubarea(id.guild, id.channel, id.target);
+  store.setSubareaLock(id.guild, id.channel, '[]', id.target);
+  await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者/);
+  store.setSubareaDelegate(id.guild, id.channel, id.actor, id.target);
+  f.state.onChannelFetch = () => { store.deleteSubareaDelegate(id.guild, id.channel, id.actor); };
+  await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者/);
+  assert.ok(store.getSubareaLock(id.guild, id.channel));
+  assert.equal(f.counters.set, 0);
+}));
+
+test('outside unlock validates the selected guild and private thread membership', withStore(async (store) => {
+  const f = fixture(store, 'unlock', true);
+  f.state.invokingChannelId = id.other; f.state.selectedChannelId = id.channel;
+  f.channel.guildId = id.other;
+  await assert.rejects(handleSubareaTools(f.command, store), /已登記的文字子區或討論串/);
+  f.channel.guildId = id.guild; f.channel.type = ChannelType.PrivateThread;
+  f.state.privateMembers.delete(id.actor);
+  f.channel.locked = true; f.channel.archived = true;
+  await assert.rejects(handleSubareaTools(f.command, store), /私密討論串/);
+  assert.equal(f.channel.locked, true); assert.equal(f.counters.edits, 0);
+}));
+
+test('lock target parsing accepts only one current-guild channel ID or Discord link', withStore((store) => {
+  const f = fixture(store, 'unlock');
+  assert.equal(resolveSubareaLockTarget(f.command), id.channel);
+  f.state.channelIdInput = id.target;
+  assert.equal(resolveSubareaLockTarget(f.command), id.target);
+  for (const tail of [id.target, `${id.target}/${id.message}`]) {
+    f.state.channelIdInput = `https://discord.com/channels/${id.guild}/${tail}`;
+    assert.equal(resolveSubareaLockTarget(f.command), id.target);
+  }
+  for (const invalid of ['bad-id', `https://example.com/channels/${id.guild}/${id.target}`,
+    `https://discord.com/channels/${id.other}/${id.target}`, `https://discord.com@evil.test/channels/${id.guild}/${id.target}`]) {
+    f.state.channelIdInput = invalid;
+    assert.throws(() => resolveSubareaLockTarget(f.command));
+  }
+  f.state.channelIdInput = id.target; f.state.selectedChannelId = id.channel;
+  assert.throws(() => resolveSubareaLockTarget(f.command), /擇一/);
 }));
