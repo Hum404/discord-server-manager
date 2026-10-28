@@ -1,7 +1,7 @@
 import { ChannelType, EmbedBuilder, escapeMarkdown, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
 import { logFailure, UserError } from './errors.js';
 import { truncate } from './presentation.js';
-import type { Store } from './store.js';
+import type { ModerationCase, Store } from './store.js';
 
 const actionLabels: Record<string, string> = {
   warn: '警告', timeout: '禁言', untimeout: '解除禁言', kick: '踢出',
@@ -25,15 +25,17 @@ export async function record(
   action: string, userId: string | null, reason: string, details?: string,
   targetChannelId?: string,
 ): Promise<string> {
-  let caseNumber: number;
+  let entry: ModerationCase;
   try {
-    caseNumber = store.addCase({ guildId: command.guildId, action, userId,
-      moderatorId: command.user.id, reason, details }).caseNumber;
+    entry = store.addCase({ guildId: command.guildId, action, userId,
+      moderatorId: command.user.id, reason, details, channelId: targetChannelId ?? command.channelId });
   } catch (error) {
     logFailure('操作完成，但本機管理紀錄寫入失敗', error);
     return '\n⚠️ 操作已完成，但本機管理紀錄寫入失敗，請檢查儲存空間。';
   }
-  const suffix = `\n本服案件 #${caseNumber}`;
+  // Member activity stays in the private ledger, even when a server log is configured.
+  const suffix = entry.scope === 'server' ? `\n本服案件 #${entry.caseNumber}` : `\n成員紀錄 #${entry.caseNumber}`;
+  if (entry.scope !== 'server') return suffix;
   try {
     const settings = store.getSettings(command.guildId);
     if (!settings.logChannelId) return suffix;
@@ -43,7 +45,7 @@ export async function record(
       throw new UserError('本伺服器的管理紀錄頻道已不存在或設定不符。');
     }
     const embed = new EmbedBuilder().setColor(0x5865f2)
-      .setTitle(`本服案件 #${caseNumber} · ${actionLabels[action] ?? action}`)
+      .setTitle(`本服案件 #${entry.caseNumber} · ${actionLabels[action] ?? action}`)
       .addFields(
         { name: '執行者', value: `<@${command.user.id}>（${command.user.id}）` },
         { name: '對象', value: userId ? `<@${userId}>（${userId}）` : `<#${targetChannelId ?? command.channelId}>` },

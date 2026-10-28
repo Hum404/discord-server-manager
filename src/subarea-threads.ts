@@ -233,7 +233,7 @@ async function assign(command: Command, store: Store, channelId: string): Promis
   if (!channel.permissionsFor(owner)?.has(PermissionFlagsBits.ViewChannel)) throw new UserError('指定的建立者無法查看這個討論串。');
   store.setSubarea(command.guildId, channel.id, owner.id);
   store.deleteSubareaRestriction(command.guildId, channel.id, owner.id);
-  const suffix = await record(command, store, 'subarea-assign', owner.id, '指派討論串建立者', `討論串 ${channel.id}`);
+  const suffix = await record(command, store, 'subarea-assign', owner.id, '指派討論串建立者', `討論串 ${channel.id}`, channel.id);
   await command.editReply({ content: `已登記 <#${channel.id}> 的建立者為 <@${owner.id}>。${suffix}`, allowedMentions: noMentions });
 }
 
@@ -331,7 +331,7 @@ export async function createThreadSubarea(command: Command, store: Store): Promi
       logFailure('子區已建立，但開帖訊息或加入建立者失敗', error);
       warning = '\n⚠️ 子區已保存，但開帖訊息或加入成員失敗，請開啟子區後手動加入。';
     }
-    const suffix = await record(command, store, 'subarea-create', actor.id, '建立討論串子區', `子區 ${created.id}；父頻道 ${parent.id}`);
+    const suffix = await record(command, store, 'subarea-create', actor.id, '建立討論串子區', `子區 ${created.id}；父頻道 ${parent.id}`, created.id);
     await command.editReply({ content: `已建立${type === 'forum' ? '論壇帖子' : '討論串'} <#${created.id}>。${warning}${suffix}`,
       allowedMentions: noMentions });
   });

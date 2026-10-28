@@ -274,7 +274,7 @@ async function createArea(command: Command, store: Store): Promise<void> {
       catch (rollbackError) { logFailure('新子區回復刪除失敗', rollbackError); }
       throw error;
     }
-    const suffix = await record(command, store, 'subarea-create', current.actor.id, '建立子區', `子區 ${channel.id}`);
+    const suffix = await record(command, store, 'subarea-create', current.actor.id, '建立子區', `子區 ${channel.id}`, channel.id);
     await command.editReply({ content: `已建立子區 <#${channel.id}>，建立者可使用 /subarea 管理此頻道。${suffix}`, allowedMentions: noMentions });
   });
 }
@@ -329,7 +329,7 @@ async function assignArea(command: Command, store: Store): Promise<void> {
       } catch (rollbackError) { logFailure('子區建立者指派資料回復失敗', rollbackError); }
       throw error;
     }
-    const suffix = await record(command, store, 'subarea-assign', owner.id, '指派子區建立者', `子區 ${channel.id}`);
+    const suffix = await record(command, store, 'subarea-assign', owner.id, '指派子區建立者', `子區 ${channel.id}`, channel.id);
     await command.editReply({ content: `已將 <#${channel.id}> 的建立者設定為 <@${owner.id}>。${suffix}`, allowedMentions: noMentions });
   });
 }

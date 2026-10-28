@@ -37,7 +37,7 @@ function getSubOption(commandName: string, subcommandName: string, optionName: s
 
 test('serializes the command allowlist with appeals available in bot DMs', () => {
   assert.deepEqual(serialized.map((command) => command.name).sort(), [
-    'help', 'ping', 'warn', 'warnings', 'timeout', 'untimeout',
+    'help', 'ping', 'records', 'warn', 'warnings', 'timeout', 'untimeout',
     'kick', 'ban', 'unban', 'clear', 'config', 'access', 'appeal', 'subarea', 'admin',
   ].sort());
   for (const command of serialized) {
@@ -53,7 +53,7 @@ test('message APP actions target selected messages and retain runtime channel au
   const menus = messageCommands.map((command) => command.toJSON());
   assert.deepEqual(menus.map((command) => command.name), [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
   assert.equal(allCommands.length, commands.length + 2);
-  assert.equal(commands.length, 15, 'existing slash commands remain available separately');
+  assert.equal(commands.length, 16, 'slash commands include the member-record query');
   for (const menu of menus) {
     assert.equal(menu.type, ApplicationCommandType.Message);
     assert.deepEqual(menu.contexts, [InteractionContextType.Guild]);
@@ -316,7 +316,7 @@ test('lock and unlock accept optional text or thread targets for recovery from a
     assert.equal(fallback.max_length, 200);
     assert.match(getOption('subarea', action).description, /其他頻道/);
   }
-  assert.equal(allCommands.length, 17);
+  assert.equal(allCommands.length, 18);
   assert.equal(messageCommands.length, 2);
   assert.ok(messageCommands.every((command) => command.toJSON().type === ApplicationCommandType.Message));
 });
@@ -355,6 +355,31 @@ test('administrator operations bound case IDs, native-management inputs and edit
   const nsfw = getSubOption('admin', 'channel-edit', 'nsfw');
   assert.ok(nsfw.type === ApplicationCommandOptionType.Boolean);
   assert.notEqual(nsfw.required, true);
+});
+
+test('member records are guild-only with optional member, local ID and direction filters', () => {
+  const records = getCommand('records');
+  assert.deepEqual(records.contexts, [InteractionContextType.Guild]);
+  assert.equal(records.default_member_permissions, null, 'ordinary members can reach the self-only runtime check');
+  assert.equal(permissionForCommand('records'), null);
+  assert.deepEqual(records.options?.map((option) => option.name), ['user', 'id', 'direction']);
+  const member = getOption('records', 'user');
+  assert.equal(member.type, ApplicationCommandOptionType.User);
+  assert.notEqual(member.required, true);
+  const id = getOption('records', 'id');
+  assert.ok(id.type === ApplicationCommandOptionType.Integer);
+  assert.notEqual(id.required, true);
+  assert.equal(id.min_value, 1);
+  const direction = getOption('records', 'direction');
+  assert.ok(direction.type === ApplicationCommandOptionType.String);
+  assert.notEqual(direction.required, true);
+  assert.deepEqual(direction.choices?.map(({ name, value }) => ({ name, value })), [
+    { name: '執行的操作', value: 'performed' },
+    { name: '收到的操作', value: 'received' },
+    { name: '全部相關', value: 'all' },
+  ]);
+  assert.match(getOption('admin', 'cases').description, /伺服器處罰/);
+  assert.match(getOption('config', 'logs').description, /成員操作不發送/);
 });
 
 test('nested command schemas obey Discord option limits and required-before-optional ordering', () => {

@@ -225,7 +225,7 @@ test('a native administrator can grant all five scopes atomically and writes an 
     assert.equal(audit?.action, 'access-grant');
     assert.equal(audit?.moderatorId, ids.actor);
     assert.equal(audit?.userId, ids.recipient);
-    assert.match((f.edits.at(-1) as { content: string }).content, /已授權.*案件 #/s);
+    assert.match((f.edits.at(-1) as { content: string }).content, /已授權.*成員紀錄 #/s);
   } finally { store.close(); }
 });
 

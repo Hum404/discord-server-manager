@@ -2,6 +2,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { APPEALABLE_ACTIONS, MANAGEMENT_SCOPES, type ManagementScope } from './domain.js';
+import { auditScopeForAction, SERVER_AUDIT_ACTIONS, type AuditScope } from './audit-policy.js';
+
+export type MemberRecordDirection = 'performed' | 'received' | 'all';
 
 export const DEFAULT_WELCOME_MESSAGE = '歡迎 {user} 加入 {server}！你是第 {count} 位成員。';
 
@@ -30,6 +33,8 @@ export interface ModerationCase {
   caseNumber: number;
   guildId: string;
   action: string;
+  scope: AuditScope;
+  channelId: string | null;
   userId: string | null;
   moderatorId: string;
   reason: string;
@@ -98,10 +103,12 @@ export interface SubareaRestriction {
 
 type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId' | 'subareaForumId'>>;
 type NewWarning = Pick<Warning, 'guildId' | 'userId' | 'moderatorId' | 'reason'>;
-type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & { details?: string };
+type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & {
+  details?: string; channelId?: string | null;
+};
 
 const warningColumns = 'id, guild_id AS guildId, user_id AS userId, moderator_id AS moderatorId, reason, created_at AS createdAt';
-const caseColumns = 'id, case_number AS caseNumber, guild_id AS guildId, action, user_id AS userId, moderator_id AS moderatorId, reason, details, created_at AS createdAt';
+const caseColumns = 'id, case_number AS caseNumber, guild_id AS guildId, action, scope, channel_id AS channelId, user_id AS userId, moderator_id AS moderatorId, reason, details, created_at AS createdAt';
 const grantColumns = 'guild_id AS guildId, user_id AS userId, scope, granted_by AS grantedBy, created_at AS createdAt';
 const appealColumns = `id, guild_id AS guildId, case_id AS caseId, user_id AS userId, reason, status,
   created_at AS createdAt, reviewer_id AS reviewerId, response, reviewed_at AS reviewedAt,
@@ -134,6 +141,15 @@ function resultLimit(value = 10): number {
 function positiveId(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError('Record id must be a positive safe integer.');
   return value;
+}
+
+function memberRecordPredicate(direction: MemberRecordDirection): string {
+  switch (direction) {
+    case 'performed': return 'moderator_id = ?';
+    case 'received': return 'user_id = ?';
+    case 'all': return '(moderator_id = ? OR user_id = ?)';
+    default: throw new TypeError('Unknown member record direction.');
+  }
 }
 
 function managementScope(value: ManagementScope): ManagementScope {
@@ -220,6 +236,8 @@ export class Store {
           case_number INTEGER CHECK(case_number BETWEEN 1 AND 9007199254740991),
           guild_id TEXT NOT NULL,
           action TEXT NOT NULL CHECK(length(action) BETWEEN 1 AND 64),
+          scope TEXT CHECK(scope IN ('server', 'member')),
+          channel_id TEXT,
           user_id TEXT,
           moderator_id TEXT NOT NULL,
           reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 1000),
@@ -302,6 +320,7 @@ export class Store {
         }
       }
       this.migrateCaseNumbers();
+      this.migrateAuditScopes();
     } catch (error) {
       this.db.close();
       throw error;
@@ -335,6 +354,41 @@ export class Store {
           SELECT number FROM numbered WHERE numbered.id = moderation_cases.id
         ) WHERE case_number IS NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS cases_guild_number ON moderation_cases(guild_id, case_number);
+      `);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /** Classify legacy rows without changing their identifiers or existing appeal links. */
+  private migrateAuditScopes(): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(moderation_cases)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'scope')) {
+        this.db.exec("ALTER TABLE moderation_cases ADD COLUMN scope TEXT CHECK(scope IN ('server', 'member'))");
+      }
+      const addedChannel = !columns.some((column) => column.name === 'channel_id');
+      if (addedChannel) this.db.exec('ALTER TABLE moderation_cases ADD COLUMN channel_id TEXT');
+      const placeholders = SERVER_AUDIT_ACTIONS.map(() => '?').join(', ');
+      this.db.prepare(`UPDATE moderation_cases SET scope = CASE WHEN action IN (${placeholders})
+        THEN 'server' ELSE 'member' END WHERE scope IS NULL`).run(...SERVER_AUDIT_ACTIONS);
+      if (addedChannel) {
+        const legacy = this.db.prepare('SELECT id, details FROM moderation_cases WHERE details IS NOT NULL')
+          .all() as Array<{ id: number; details: string }>;
+        const fillChannel = this.db.prepare('UPDATE moderation_cases SET channel_id = ? WHERE id = ?');
+        for (const row of legacy) {
+          // Older writers stored the actual target as structured leading text.
+          const match = /^(?:子區|討論串|頻道) ([0-9]{17,20})(?:\b|[； ·])/u.exec(row.details);
+          if (match) fillChannel.run(match[1]!, row.id);
+        }
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS cases_scope_guild ON moderation_cases(guild_id, scope, id DESC);
+        CREATE INDEX IF NOT EXISTS cases_member_actor ON moderation_cases(guild_id, scope, moderator_id, id DESC);
+        CREATE INDEX IF NOT EXISTS cases_member_target ON moderation_cases(guild_id, scope, user_id, id DESC);
       `);
       this.db.exec('COMMIT');
     } catch (error) {
@@ -445,6 +499,9 @@ export class Store {
     identifier(moderatorId);
     requiredText(action, 'Action', 64);
     requiredText(reason, 'Reason', 1000);
+    const scope = auditScopeForAction(action);
+    const channelId = input.channelId ?? null;
+    if (channelId !== null) identifier(channelId);
     const details = input.details ?? null;
     if (details !== null && (typeof details !== 'string' || details.length > 4000)) {
       throw new TypeError('Case details must contain at most 4000 characters.');
@@ -456,12 +513,12 @@ export class Store {
         .get(guildId) as { maximum: number };
       const caseNumber = positiveId(previous.maximum + 1);
       const result = this.db.prepare(`
-        INSERT INTO moderation_cases(case_number, guild_id, action, user_id, moderator_id, reason, details, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(caseNumber, guildId, action, userId, moderatorId, reason, details, createdAt);
+        INSERT INTO moderation_cases(case_number, guild_id, action, scope, channel_id, user_id, moderator_id, reason, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(caseNumber, guildId, action, scope, channelId, userId, moderatorId, reason, details, createdAt);
       const id = positiveId(Number(result.lastInsertRowid));
       this.db.exec('COMMIT');
-      return { id, caseNumber, guildId, action, userId, moderatorId, reason, details, createdAt };
+      return { id, caseNumber, guildId, action, scope, channelId, userId, moderatorId, reason, details, createdAt };
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;
@@ -473,6 +530,50 @@ export class Store {
     return this.db.prepare(`
       SELECT ${caseColumns} FROM moderation_cases WHERE guild_id = ? ORDER BY id DESC LIMIT ?
     `).all(guildId, resultLimit(limit)) as unknown as ModerationCase[];
+  }
+
+  listServerCases(guildId: string, userId?: string, limit = 10): ModerationCase[] {
+    identifier(guildId);
+    resultLimit(limit);
+    if (userId !== undefined) {
+      identifier(userId);
+      return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases
+        WHERE guild_id = ? AND scope = 'server' AND user_id = ? ORDER BY id DESC LIMIT ?`)
+        .all(guildId, userId, limit) as unknown as ModerationCase[];
+    }
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases
+      WHERE guild_id = ? AND scope = 'server' ORDER BY id DESC LIMIT ?`)
+      .all(guildId, limit) as unknown as ModerationCase[];
+  }
+
+  getServerCase(guildId: string, caseNumber: number): ModerationCase | null {
+    identifier(guildId);
+    positiveId(caseNumber);
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases
+      WHERE guild_id = ? AND case_number = ? AND scope = 'server'`)
+      .get(guildId, caseNumber) as unknown as ModerationCase | undefined ?? null;
+  }
+
+  listMemberCases(guildId: string, memberId: string, direction: MemberRecordDirection = 'performed', limit = 10): ModerationCase[] {
+    identifier(guildId);
+    identifier(memberId);
+    resultLimit(limit);
+    const predicate = memberRecordPredicate(direction);
+    const members = direction === 'all' ? [memberId, memberId] : [memberId];
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases
+      WHERE guild_id = ? AND scope = 'member' AND ${predicate} ORDER BY id DESC LIMIT ?`)
+      .all(guildId, ...members, limit) as unknown as ModerationCase[];
+  }
+
+  getMemberCase(guildId: string, caseNumber: number, memberId: string, direction: MemberRecordDirection = 'performed'): ModerationCase | null {
+    identifier(guildId);
+    positiveId(caseNumber);
+    identifier(memberId);
+    const predicate = memberRecordPredicate(direction);
+    const members = direction === 'all' ? [memberId, memberId] : [memberId];
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases
+      WHERE guild_id = ? AND case_number = ? AND scope = 'member' AND ${predicate}`)
+      .get(guildId, caseNumber, ...members) as unknown as ModerationCase | undefined ?? null;
   }
 
   getCase(id: number): ModerationCase | null {

@@ -1,6 +1,6 @@
 # Discord 伺服器管理機器人
 
-使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
+使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。伺服器處罰日誌與成員操作紀錄分開查詢。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
 
 ## 環境需求
 
@@ -113,6 +113,7 @@ npm run commands:sync
 | --- | --- | --- |
 | `/help` | 查看使用說明。 | 一般成員 |
 | `/ping` | 查看機器人延遲。 | 一般成員 |
+| `/records [user] [id] [direction]` | 查看本服成員操作紀錄；預設自己的執行紀錄，可切換收到的操作。 | 一般成員可看自己；查看他人需原生 Manage Server 或伺服器擁有者 |
 | `/warn user reason` | 新增成員警告，保存管理者及原因。 | Moderate Members 或 `warn` 授權 |
 | `/warnings user` | 查看該成員最近 10 筆警告及總數。 | Moderate Members 或 `warn` 授權 |
 | `/timeout user minutes reason` | 禁言 1 至 40,320 分鐘（28 天）。 | Moderate Members 或 `timeout` 授權 |
@@ -122,7 +123,7 @@ npm run commands:sync
 | `/unban user_id reason` | 依 Discord 使用者 ID 解除封鎖。 | Ban Members 或 `ban` 授權 |
 | `/clear amount` | 確認後清理目前頻道的 1 至 100 則訊息。 | Manage Messages 或 `clear` 授權；仍需查看及讀取頻道歷史 |
 | `/config view` | 查看此伺服器的設定。 | Manage Server |
-| `/config logs [channel]` | 設定本服日誌通知頻道；省略停用通知，本機案件仍保存。 | Manage Server |
+| `/config logs [channel]` | 設定本服伺服器處罰日誌頻道；子區等成員操作不發到此頻道。省略停用通知，本機紀錄仍保存。 | Manage Server |
 | `/config welcome [channel]` | 設定歡迎頻道；省略頻道則停用。 | Manage Server |
 | `/config welcome-message message` | 設定歡迎訊息範本，最多 1,000 字元。 | Manage Server |
 | `/config appeals [channel]` | 設定私人申訴通知頻道；省略則停用頻道通知。 | Manage Server |
@@ -153,7 +154,7 @@ npm run commands:sync
 | `/subarea delete` | 經兩次確認後刪除自己的子區。 | 僅目前子區建立者 |
 | `/subarea delegate user`、`/subarea undelegate user` | 授予／撤回目前子區協管。 | 該子區建立者或原生 Administrator |
 | `/subarea delegates`、`/subarea info` | 查看協管及子區管理資訊。 | 該子區建立者、協管或原生 Administrator |
-| `/admin cases [user]`、`/admin case id` | 查看本伺服器近期案件或指定案件完整紀錄。 | 原生 Manage Server |
+| `/admin cases [user]`、`/admin case id` | 查看本伺服器的處罰案件；成員操作改用 `/records`。 | 原生 Manage Server |
 | `/admin warning-remove id reason` | 確認後移除警告，保存原案件及移除紀錄。 | 原生 Manage Server |
 | `/admin role-add user role reason`、`/admin role-remove user role reason` | 新增／移除成員身分組。 | 原生 Manage Server 與 Manage Roles |
 | `/admin channel-edit channel reason [name] [slowmode] [nsfw]` | 編輯文字／公告頻道名稱、慢速模式或年齡限制。 | 原生 Manage Server 與 Manage Channels |
@@ -176,7 +177,7 @@ npm run commands:sync
 
 選單可用於獨立文字子區及討論串／論壇帖子。用戶原生建立的帖子會沿用既有的帖主登記方式；私密討論串仍會另外檢查成員資格。Bot 需要對應的查看、歷史、Pin Messages 或 Manage Messages 權限。子區的「標註」仍只限建立者，協管與其他管理員不能藉 APP 選單代替建立者置頂。
 
-確認提示和操作結果僅操作者可見。程式只操作所選訊息所在的同一伺服器與頻道，會在執行前重新檢查權限，並保存本服案件紀錄。訊息 APP 操作不需要開啟 Message Content Intent。
+確認提示和操作結果僅操作者可見。程式只操作所選訊息所在的同一伺服器與頻道，會在執行前重新檢查權限，並保存成員操作紀錄；置頂或刪除單則訊息不會發送到伺服器處罰日誌頻道。訊息 APP 操作不需要開啟 Message Content Intent。
 
 選單需透過伺服器安裝的機器人使用，邀請範圍須包含 `applications.commands`。若更新後未看到選單，確認服務已成功啟動並註冊，再重新開啟 Discord；全域指令可能仍在傳播。單純新增 APP 選單無須執行 `commands:sync`，該工具用於處理重用 Bot 時遺留的舊指令。
 
@@ -373,6 +374,42 @@ Discord 的討論串原生封存／鎖定會同時阻止帖主發言，無法只
 
 新建文字子區會把 Mention Everyone 權限保留給建立者及 Bot。這不會禁止 Discord 本身允許的個別用戶提及，或提及已設定為可提及的身分組；原生 Administrator 亦可繞過頻道覆寫。討論串沿用母頻道的原生權限，Bot 提供的三種指令仍嚴格檢查建立者身分。
 
+### 伺服器處罰日誌與成員紀錄
+
+`/config logs` 指定的頻道只接收伺服器層級的警告、禁言、踢出、封鎖及解除處罰通知：`warn`、`timeout`、`untimeout`、`kick`、`ban`、`unban`、`warning-remove`。`/admin cases` 和 `/admin case` 也只查詢這類案件；`user` 篩選的是被處罰的成員。
+
+子區建立、指派、協管授權、置頂、刪訊息、慢速模式、鎖定，以及子區內的禁言／移除成員，改為成員紀錄。一般訊息 APP 操作、批次清理、設定、身分組與 Bot 授權變更、申訴流程操作也保存為成員紀錄，不發到上述日誌頻道。每筆保留執行者、操作對象、原因及可用的頻道資訊，回覆顯示「成員紀錄 #N」。
+
+查看自己最近執行的操作：
+
+```text
+/records
+```
+
+查看自己收到的操作，或所有與自己相關的成員紀錄：
+
+```text
+/records direction:received
+```
+
+```text
+/records direction:all
+```
+
+原生 Manage Server 管理員或伺服器擁有者可查看指定成員的紀錄；一般成員只能查閱自己的紀錄，子區建立者、協管或 Bot 管理授權不會自動取得查看其他成員歷史的權限：
+
+```text
+/records user:@成員 direction:all
+```
+
+指定紀錄編號可查看完整內容；編號仍需屬於所選成員及查詢方向：
+
+```text
+/records id:12
+```
+
+查詢結果僅操作者可見，資料按伺服器隔離，不會自動建立成員頻道或發送私訊。既有紀錄會依類型重新分類，不刪除原紀錄、不重編本服編號，子區處罰仍可提交申訴。已發送到 Discord 的舊日誌訊息不會自動刪除。
+
 ### 管理員工具
 
 `/admin` 僅限具備原生 Manage Server 的用戶；單靠 `/access` Bot 管理授權不能使用。身分組及頻道操作還會檢查對應的原生管理權限、操作者與 Bot 的角色階級，以及目標頻道的查看權限。
@@ -430,17 +467,17 @@ Discord 的討論串原生封存／鎖定會同時阻止帖主發言，無法只
 
 設定、警告、管理授權、申訴工單、子區建立者、協管、鎖定狀態、文字頻道鎖定快照與限制狀態都保存在 SQLite，重新啟動後仍會保留，各伺服器資料分開查詢。首次啟動新版時會自動新增資料表及設定欄位，保留舊的警告、案件與設定。文字子區限制同時保存在 Discord 頻道覆寫中，不依賴 Bot 持續在線才生效；討論串鎖定與禁言依賴 Bot 在線接收事件。
 
-管理紀錄頻道是額外通知；頻道被刪除或失去發送權限時，通知失敗不代表已成功的管理操作會撤回。也可透過 Discord 原生稽核紀錄查看 Discord 支援的管理操作。
+伺服器處罰日誌頻道是額外通知；頻道被刪除或失去發送權限時，通知失敗不代表已成功的處罰會撤回。成員操作只保存到本機紀錄並透過 `/records` 私下查詢。也可透過 Discord 原生稽核紀錄查看 Discord 支援的管理操作。
 
-**每個伺服器的案件編號獨立計算。** A 服的案件從 #1、#2 累加，不會占用 B 服的案件編號。日誌頻道、案件查詢與申訴使用各自伺服器的案件；回覆顯示「本服案件 #N」。未設定 `/config logs` 仍會保存本機案件，供查詢與申訴使用，但不向任何日誌頻道發送通知。
+**每個伺服器的紀錄編號獨立計算。** A 服不會占用 B 服的編號。伺服器處罰與成員紀錄沿用同一本服唯一編號，因此分流查詢的編號可能不連續；原有編號與申訴關聯保持有效。處罰回覆顯示「本服案件 #N」，其他操作顯示「成員紀錄 #N」。未設定 `/config logs` 仍會保存本機紀錄，供查詢與申訴使用，但不向日誌頻道發送通知。
 
-升級時會依各服原有案件的先後順序建立本服編號，保留案件內容及既有申訴關聯。舊版訊息上的共用流水號可能與新版本服編號不同，請用 `/admin cases` 查看目前編號。私訊中若多個伺服器都有同一案件編號，請從對應伺服器的處罰通知按鈕開啟申訴；Bot 不會替你猜選哪個伺服器。
+從較早的全域流水號版本升級時，會依各服原有案件的先後順序建立本服編號；已採本服編號的資料不會因本次日誌分流再次重編。舊版訊息上的全域流水號可能與本服編號不同，請用 `/admin cases` 或 `/records` 查詢。私訊中若多個伺服器都有同一案件編號，請從對應伺服器的處罰通知按鈕開啟申訴；Bot 不會替你猜選哪個伺服器。
 
 請將資料庫放在持久磁碟並定期備份。複製資料庫前先正常停止機器人，再備份完整資料目錄；執行中的 SQLite 可能還有 `-wal` 與 `-shm` 檔案，僅複製主檔可能漏失資料。資料庫含使用者 ID、警告原因及管理紀錄，請限制檔案存取並按社群需求管理保存期限。
 
 ## 阿里雲現有部署更新
 
-以下沿用 `/opt/discord-manager`、`discordbot` 帳號及 `discord-manager` systemd 服務。每次只執行一個命令區塊；保留原本 `.env`，不需要重新填 Token 或 ID。更新前請先正常停止服務並備份資料目錄。
+以下沿用 `/opt/discord-manager`、`discordbot` 帳號及 `discord-manager` systemd 服務。每次只執行一個命令區塊；保留原本 `.env`，不需要重新填 Token 或 ID。本次日誌分流會自動遷移既有紀錄，沿用目前通知頻道，不需要新增 Discord 授權或設定。更新前請先正常停止服務並備份資料目錄；一般更新順序為停止、下載、編譯、啟動。
 
 停止服務：
 
@@ -484,7 +521,7 @@ sudo systemctl start discord-manager
 sudo journalctl -u discord-manager -n 50 --no-pager
 ```
 
-最後在 Discord 設定私人申訴頻道、子區分類及論壇，再依需要授權用戶：
+只有要更改通知頻道或子區開放範圍時，才需在 Discord 更新設定；原有設定會繼續使用：
 
 ```text
 /config appeals channel:#申訴審核

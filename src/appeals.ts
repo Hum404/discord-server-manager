@@ -156,7 +156,8 @@ function auditAppeal(store: Store, appeal: Appeal, actorId: string, action: stri
   try {
     const original = validCase(store, appeal.caseId, appeal.userId, appeal.guildId);
     store.addCase({ guildId: appeal.guildId, action, userId: appeal.userId, moderatorId: actorId,
-      reason, details: `申訴工單 #${appeal.id}；原案件 #${original.caseNumber}` });
+      reason, channelId: original.channelId ?? undefined,
+      details: `申訴工單 #${appeal.id}；原案件 #${original.caseNumber}` });
   } catch (error) {
     logFailure('申訴工單已儲存，但操作紀錄寫入失敗', error);
   }

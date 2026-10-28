@@ -54,6 +54,16 @@ const appealStatusChoices = [
 export const commands = [
   command('help', '查看機器人的管理指令與使用方式'),
   command('ping', '查看機器人連線狀態與延遲'),
+  command('records', '查看本服成員操作紀錄；預設為自己執行的操作')
+    .setDefaultMemberPermissions(null)
+    .addUserOption((option) => option.setName('user').setDescription('要查看的成員；省略為自己'))
+    .addIntegerOption((option) => option.setName('id').setDescription('本服成員紀錄編號；省略顯示最近 10 筆').setMinValue(1))
+    .addStringOption((option) => option.setName('direction').setDescription('紀錄方向；預設為執行的操作')
+      .addChoices(
+        { name: '執行的操作', value: 'performed' },
+        { name: '收到的操作', value: 'received' },
+        { name: '全部相關', value: 'all' },
+      )),
   command('warn', '新增一筆成員警告，並永久保存紀錄')
     .addUserOption((option) =>
       option.setName('user').setDescription('要警告的成員').setRequired(true),
@@ -119,9 +129,9 @@ export const commands = [
       subcommand.setName('view').setDescription('查看目前的伺服器設定'),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('logs').setDescription('設定本服日誌通知頻道；省略停用通知，本機案件仍保留')
+      subcommand.setName('logs').setDescription('設定本服伺服器處罰日誌頻道；省略停用通知，成員操作不發送至此')
         .addChannelOption((option) =>
-          option.setName('channel').setDescription('管理紀錄發送至此頻道')
+          option.setName('channel').setDescription('伺服器警告、禁言、踢出、封鎖及解除處罰通知頻道')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
         ),
     )
@@ -384,12 +394,12 @@ export const commands = [
     .addSubcommand((subcommand) => subcommand.setName('info').setDescription('查看目前子區的建立者、協管與限制狀態')),
   command('admin', '查看管理案件、移除警告及管理身分組和頻道')
     .addSubcommand((subcommand) =>
-      subcommand.setName('cases').setDescription('查看本伺服器最近 10 筆管理案件')
-        .addUserOption((option) => option.setName('user').setDescription('只查看此用戶的案件')),
+      subcommand.setName('cases').setDescription('查看本伺服器最近 10 筆伺服器處罰案件')
+        .addUserOption((option) => option.setName('user').setDescription('只查看對此用戶執行的伺服器處罰')),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('case').setDescription('查看本伺服器指定管理案件的完整紀錄')
-        .addIntegerOption((option) => option.setName('id').setDescription('本伺服器獨立的管理案件編號').setMinValue(1).setRequired(true)),
+      subcommand.setName('case').setDescription('查看本伺服器指定處罰案件；成員操作請使用 records')
+        .addIntegerOption((option) => option.setName('id').setDescription('本伺服器獨立的處罰案件編號').setMinValue(1).setRequired(true)),
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('warning-remove').setDescription('確認後移除一筆警告，保留原案件並記錄移除原因')

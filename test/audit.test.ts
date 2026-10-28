@@ -71,7 +71,7 @@ test('configured logs publish only to the invoking guild and display its local c
     const b = fixture(ids.guildB, ids.channelB);
     store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
     store.updateSettings(ids.guildB, { logChannelId: ids.channelB });
-    await record(a.command, store, 'clear', null, 'A operation');
+    await record(a.command, store, 'timeout', ids.target, 'A timeout');
     await record(b.command, store, 'warn', ids.target, 'B operation @everyone');
     assert.deepEqual(a.fetched, [ids.channelA]);
     assert.deepEqual(b.fetched, [ids.channelB]);
@@ -83,14 +83,16 @@ test('configured logs publish only to the invoking guild and display its local c
   });
 });
 
-test('outside-channel recovery logs the selected target rather than the invocation channel', async () => {
+test('outside-channel recovery privately records the selected target instead of the invocation channel', async () => {
   await withStore(async (store) => {
     const a = fixture(ids.guildA, ids.channelA);
     const targetChannelId = '510000000000000007';
     store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
-    await record(a.command, store, 'subarea-unlock', null, '解除子區鎖定', `子區 ${targetChannelId}`, targetChannelId);
-    const fields = a.sent[0]?.embeds[0]?.toJSON().fields;
-    assert.equal(fields?.find((field) => field.name === '對象')?.value, `<#${targetChannelId}>`);
+    const result = await record(a.command, store, 'subarea-unlock', null, '解除子區鎖定', `子區 ${targetChannelId}`, targetChannelId);
+    assert.equal(result, '\n成員紀錄 #1');
+    assert.deepEqual(a.fetched, []);
+    assert.deepEqual(a.sent, []);
+    assert.equal(store.listCases(ids.guildA)[0]?.channelId, targetChannelId);
     assert.equal(store.listCases(ids.guildA)[0]?.details, `子區 ${targetChannelId}`);
   });
 });
@@ -125,7 +127,7 @@ test('log delivery failure reports the correct local case and preserves history'
   await withStore(async (store) => {
     const a = fixture(ids.guildA, ids.channelA);
     const b = fixture(ids.guildB, ids.channelB);
-    await record(a.command, store, 'clear', null, 'Other guild');
+    await record(a.command, store, 'timeout', ids.target, 'Other guild');
     store.updateSettings(ids.guildB, { logChannelId: ids.channelB });
     b.state.failSend = true;
     const result = await record(b.command, store, 'warn', ids.target, 'Local reason');
@@ -157,5 +159,76 @@ test('disabling the guild log while its channel is being fetched cancels the not
     assert.equal(result, '\n本服案件 #1');
     assert.deepEqual(a.sent, []);
     assert.equal(store.listCases(ids.guildA)[0]?.reason, 'Keep local only');
+  });
+});
+
+test('every subarea operation is stored by actor without fetching or sending the configured server log', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    a.state.failFetch = true;
+    const actions = ['subarea-create', 'subarea-assign', 'subarea-mute', 'subarea-unmute', 'subarea-kick',
+      'subarea-unkick', 'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
+      'subarea-rename', 'subarea-lock', 'subarea-unlock', 'subarea-delete', 'subarea-delegate',
+      'subarea-undelegate', 'subarea-tag', 'subarea-role-tag', 'subarea-announce'];
+    for (const [index, action] of actions.entries()) {
+      const result = await record(a.command, store, action, ids.target, 'Private local action', 'Local details');
+      assert.equal(result, `\n成員紀錄 #${index + 1}`);
+      const entry = store.listCases(ids.guildA)[0]!;
+      assert.equal(entry.scope, 'member');
+      assert.equal(entry.moderatorId, ids.actor);
+      assert.equal(entry.userId, ids.target);
+      assert.equal(entry.reason, 'Private local action');
+      assert.equal(entry.details, 'Local details');
+      assert.equal(entry.channelId, ids.channelA);
+    }
+    assert.deepEqual(a.fetched, []);
+    assert.deepEqual(a.sent, []);
+  });
+});
+
+test('APP actions and administrative housekeeping bypass server-log settings entirely', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.getSettings = () => { throw new Error('Member activity must not read server-log settings'); };
+    const actions = ['message-pin', 'message-unpin', 'message-delete', 'clear', 'config', 'role-add', 'role-remove',
+      'channel-edit', 'access-grant', 'access-revoke', 'appeal-submit', 'appeal-review', 'future-local-action'];
+    for (const [index, action] of actions.entries()) {
+      const result = await record(a.command, store, action, null, 'Member operation');
+      assert.equal(result, `\n成員紀錄 #${index + 1}`);
+      assert.doesNotMatch(result, /失敗/);
+    }
+    assert.deepEqual(a.fetched, []);
+    assert.deepEqual(a.sent, []);
+    assert.equal(store.listCases(ids.guildA).length, 10);
+  });
+});
+
+test('server sanctions and their reversals continue notifying the configured guild log', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    const actions = ['warn', 'timeout', 'untimeout', 'kick', 'ban', 'unban', 'warning-remove'];
+    for (const [index, action] of actions.entries()) {
+      assert.equal(await record(a.command, store, action, ids.target, 'Server sanction'), `\n本服案件 #${index + 1}`);
+      assert.equal(store.listCases(ids.guildA)[0]?.scope, 'server');
+    }
+    assert.equal(a.fetched.length, actions.length);
+    assert.equal(a.sent.length, actions.length);
+    assert.ok(a.sent.every((payload) => payload.allowedMentions.parse.length === 0));
+  });
+});
+
+test('a failed member-ledger write reports the storage failure without falling back to server logs', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.addCase = () => { throw new Error('Member storage unavailable'); };
+    const result = await record(a.command, store, 'subarea-kick', ids.target, 'Local restriction');
+    assert.match(result, /本機管理紀錄寫入失敗/);
+    assert.doesNotMatch(result, /成員紀錄 #|本服案件 #/);
+    assert.deepEqual(a.fetched, []);
+    assert.deepEqual(a.sent, []);
   });
 });

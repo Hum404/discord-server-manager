@@ -372,12 +372,12 @@ test('native APP authorization refetches REST member snapshots after the final m
   assert.deepEqual(store.listCases(ids.guild), []);
 }));
 
-test('message APP audit shows this guild case #1 even after other guild cases exist', withStore(async (store) => {
+test('message APP audit uses this guild member record even after other guild cases exist', withStore(async (store) => {
   for (let i = 0; i < 3; i++) store.addCase({ guildId: ids.otherGuild, userId: ids.actor,
     action: 'warn', moderatorId: ids.admin, reason: 'Other guild' });
   const f = fixture(store);
   await f.run();
-  assert.match(f.final(), /本服案件 #1/);
+  assert.match(f.final(), /成員紀錄 #1/);
   assert.equal(store.listCases(ids.guild)[0]?.caseNumber, 1);
   assert.equal(store.listCases(ids.guild)[0]?.id, 4);
 }));

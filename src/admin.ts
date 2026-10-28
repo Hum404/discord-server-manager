@@ -173,7 +173,7 @@ async function editChannel(command: Command, store: Store): Promise<void> {
   await channel.edit(changes);
   const details = [`頻道 ${channel.id}`, ...(name === undefined ? [] : [`名稱 ${name}`]),
     ...(slowmode === null ? [] : [`慢速模式 ${slowmode} 秒`]), ...(nsfw === null ? [] : [`NSFW ${nsfw}`])].join('；');
-  const suffix = await record(command, store, 'channel-edit', null, explanation, details);
+  const suffix = await record(command, store, 'channel-edit', null, explanation, details, channel.id);
   await command.editReply({ content: `已更新 <#${channel.id}> 的頻道設定。${suffix}`, allowedMentions: noMentions });
 }
 
@@ -185,17 +185,17 @@ export async function handleAdminCommand(command: Command, store: Store): Promis
   await authority(command);
   if (subcommand === 'cases') {
     const selected = command.options.getUser('user');
-    const cases = selected ? store.listUserCases(selected.id, command.guildId, 10) : store.listCases(command.guildId, 10);
-    await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器案件紀錄')
+    const cases = store.listServerCases(command.guildId, selected?.id, 10);
+    await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器處罰案件')
       .setDescription(cases.length ? truncate(cases.map((item) =>
         `**#${item.caseNumber}** · ${truncate(escapeMarkdown(item.action), 60)} · ${item.userId ? `<@${item.userId}>` : '頻道／設定'} · 執行者 <@${item.moderatorId}>\n${truncate(escapeMarkdown(item.reason), 200)}`,
       ).join('\n\n'), 3900) : '沒有符合條件的案件。')
-      .setFooter({ text: '本服獨立編號，顯示最近 10 筆；使用 /admin case id 查看完整案件。' })], allowedMentions: noMentions });
+      .setFooter({ text: '顯示最近 10 筆伺服器處罰；成員操作請使用 /records。' })], allowedMentions: noMentions });
     return;
   }
   if (subcommand === 'case') {
-    const item = store.getGuildCase(command.guildId, caseId(command));
-    if (!item) throw new UserError('找不到此伺服器的案件。');
+    const item = store.getServerCase(command.guildId, caseId(command));
+    if (!item) throw new UserError('找不到此伺服器的案件。子區等成員操作請使用 /records 查詢。');
     await command.editReply({ embeds: [caseEmbed(item)], allowedMentions: noMentions });
     return;
   }

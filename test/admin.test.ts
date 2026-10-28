@@ -153,6 +153,23 @@ test('admin case list filters optional member within current guild', withStore(a
   assert.doesNotMatch(JSON.stringify(f.replies), /其他成員|別服紀錄/);
 }));
 
+test('server case queries omit member activity while keeping sanction targets and original case numbers', withStore(async (store) => {
+  const f = fixture('cases');
+  const member = store.addCase({ guildId: ids.guild, moderatorId: ids.actor, userId: ids.target,
+    action: 'subarea-kick', reason: '只限子區的私人操作' });
+  const server = store.addCase({ guildId: ids.guild, moderatorId: ids.actor, userId: ids.target,
+    action: 'kick', reason: '整服踢出紀錄' });
+  await handleAdminCommand(f.command, store);
+  assert.match(JSON.stringify(f.replies), /整服踢出紀錄/);
+  assert.doesNotMatch(JSON.stringify(f.replies), /只限子區的私人操作/);
+  assert.match(JSON.stringify(f.replies), new RegExp(`#${server.caseNumber}`));
+  const detail = fixture('case');
+  detail.state.id = member.caseNumber;
+  await assert.rejects(handleAdminCommand(detail.command, store), /records/);
+  assert.equal(detail.replies.length, 0);
+  assert.equal(store.getGuildCase(ids.guild, member.caseNumber)?.reason, '只限子區的私人操作');
+}));
+
 test('admin case numbers are local even when another guild has already created several cases', withStore(async (store) => {
   const f = fixture('case');
   for (let i = 0; i < 3; i++) {

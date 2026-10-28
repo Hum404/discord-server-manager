@@ -17,6 +17,7 @@ import { scopeForCommand } from './domain.js';
 import { assertPrivateAppealChannel } from './appeal-privacy.js';
 import { handleAdminCommand } from './admin.js';
 import { handleMessageAppCommand } from './message-apps.js';
+import { handleRecordsCommand } from './records.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -223,7 +224,7 @@ async function run(command: Command, store: Store): Promise<void> {
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
         { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`unpin` 建立者置頂訊息\n`/subarea mute`、`kick` 管理區內成員\n`/subarea delegate`、`undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
         { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`role-tag`、`announce` 建立者提及通知' },
-        { name: '管理員工具', value: '`/admin cases`、`case` 案件查詢\n`/admin warning-remove` 撤銷警告紀錄\n`/admin role-add`、`role-remove` 管理身分組\n`/admin channel-edit` 編輯文字頻道' },
+        { name: '紀錄與管理員工具', value: '`/records` 查看自己的成員操作紀錄\n`/records direction:received` 查看收到的子區操作\n`/admin cases`、`case` 伺服器處罰案件\n`/admin warning-remove` 撤銷警告紀錄\n`/admin role-add`、`role-remove` 管理身分組\n`/admin channel-edit` 編輯文字頻道' },
         { name: '使用提醒', value: '踢出、封鎖、清理訊息須在 30 秒內確認。歡迎內容支援 `{user}`、`{server}`、`{count}`。設定頻道時留空可停用。' },
       )] });
     return;
@@ -237,6 +238,7 @@ async function run(command: Command, store: Store): Promise<void> {
   if (command.commandName === 'access') return handleAccessCommand(command, store);
   if (command.commandName === 'subarea') return handleSubareaCommand(command, store);
   if (command.commandName === 'admin') return handleAdminCommand(command, store);
+  if (command.commandName === 'records') return handleRecordsCommand(command, store);
   if (command.commandName === 'warnings') {
     const user = command.options.getUser('user', true);
     const warnings = store.listWarnings(command.guildId, user.id, 10);
