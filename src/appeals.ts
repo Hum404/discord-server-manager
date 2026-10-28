@@ -51,20 +51,35 @@ function validCase(store: Store, caseId: number, userId: string, guildId?: strin
   return original;
 }
 
+/** Public numbers are meaningful only inside a guild; internal IDs never select a new form. */
+function localCase(store: Store, caseNumber: number, userId: string, guildId?: string): ModerationCase {
+  if (!Number.isSafeInteger(caseNumber) || caseNumber < 1) throw new UserError(unavailable);
+  const candidates = guildId === undefined ? store.findUserCasesByNumber(userId, caseNumber)
+    : [store.getGuildCase(guildId, caseNumber)];
+  const owned = candidates.filter((entry): entry is ModerationCase =>
+    entry !== null && entry.userId === userId && APPEALABLE_ACTIONS.has(entry.action));
+  if (owned.length > 1) {
+    const guilds = truncate(owned.map((entry) => entry.guildId).join('、'), 500);
+    throw new UserError(`你在多個伺服器都有案件 #${caseNumber}（伺服器：${guilds}）。請在案件所屬伺服器內執行，或使用該伺服器處罰私訊中的「提交申訴」按鈕。`);
+  }
+  if (!owned.length) throw new UserError(unavailable);
+  return owned[0]!;
+}
+
 function selectedCase(store: Store, userId: string, guildId: string | undefined, requestedId?: number | null): ModerationCase {
-  if (requestedId !== undefined && requestedId !== null) return validCase(store, requestedId, userId, guildId);
+  if (requestedId !== undefined && requestedId !== null) return localCase(store, requestedId, userId, guildId);
   const original = store.listUserCases(userId, guildId, 100).find((entry) => APPEALABLE_ACTIONS.has(entry.action));
   if (!original) throw new UserError('目前尚無已完成的可申訴案件；若處罰正在執行，請稍後再按一次。');
   return original;
 }
 
 function appealModal(original: ModerationCase, userId: string): ModalBuilder {
-  return new ModalBuilder().setCustomId(`appeal:submit:${original.guildId}:${userId}`)
+  return new ModalBuilder().setCustomId(`appeal:submit-local:${original.guildId}:${userId}`)
     .setTitle('提交處罰申訴')
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(new TextInputBuilder()
-        .setCustomId('case_id').setLabel('案件編號').setStyle(TextInputStyle.Short)
-        .setValue(String(original.id)).setMinLength(1).setMaxLength(16).setRequired(true)),
+        .setCustomId('case_id').setLabel('此伺服器的案件編號').setStyle(TextInputStyle.Short)
+        .setValue(String(original.caseNumber)).setMinLength(1).setMaxLength(16).setRequired(true)),
       new ActionRowBuilder<TextInputBuilder>().addComponents(new TextInputBuilder()
         .setCustomId('reason').setLabel('申訴原因與補充說明').setStyle(TextInputStyle.Paragraph)
         .setMinLength(1).setMaxLength(1000).setRequired(true)),
@@ -84,7 +99,8 @@ function ticketEmbed(appeal: Appeal, original: ModerationCase): EmbedBuilder {
     .setTitle(`申訴工單 #${appeal.id} · ${statusLabels[appeal.status]}`)
     .addFields(
       { name: '申訴者', value: `<@${appeal.userId}>（${appeal.userId}）` },
-      { name: '原案件', value: `#${original.id} · ${actionLabels[original.action] ?? original.action}` },
+      { name: '所屬伺服器', value: appeal.guildId },
+      { name: '原案件', value: `#${original.caseNumber} · ${actionLabels[original.action] ?? original.action}` },
       { name: '原處罰原因', value: truncate(escapeMarkdown(original.reason), 1024) },
       { name: '申訴說明', value: truncate(escapeMarkdown(appeal.reason), 1024) },
     ).setTimestamp(new Date(appeal.createdAt));
@@ -138,18 +154,22 @@ async function postTicket(client: Client, store: Store, appeal: Appeal, original
 
 function auditAppeal(store: Store, appeal: Appeal, actorId: string, action: string, reason: string): void {
   try {
+    const original = validCase(store, appeal.caseId, appeal.userId, appeal.guildId);
     store.addCase({ guildId: appeal.guildId, action, userId: appeal.userId, moderatorId: actorId,
-      reason, details: `申訴工單 #${appeal.id}；原案件 #${appeal.caseId}` });
+      reason, details: `申訴工單 #${appeal.id}；原案件 #${original.caseNumber}` });
   } catch (error) {
     logFailure('申訴工單已儲存，但操作紀錄寫入失敗', error);
   }
 }
 
-async function submitAppeal(interaction: ModalSubmitInteraction, store: Store, guildId: string, userId: string): Promise<void> {
+async function submitAppeal(
+  interaction: ModalSubmitInteraction, store: Store, guildId: string, userId: string, legacyInternalId = false,
+): Promise<void> {
   if (interaction.user.id !== userId || (interaction.inGuild() && interaction.guildId !== guildId)) throw new UserError(unavailable);
   const caseText = interaction.fields.getTextInputValue('case_id').trim();
   if (!/^[0-9]+$/.test(caseText)) throw new UserError('請輸入有效的案件編號。');
-  const original = validCase(store, Number(caseText), userId, guildId);
+  const original = legacyInternalId ? validCase(store, Number(caseText), userId, guildId)
+    : localCase(store, Number(caseText), userId, guildId);
   const reason = interaction.fields.getTextInputValue('reason').trim();
   if (!reason || reason.length > 1000) throw new UserError('申訴說明須為 1 至 1000 個字元。');
   await acknowledge(interaction);
@@ -231,11 +251,14 @@ export async function handleAppealCommand(command: ChatInputCommandInteraction, 
       if (requested !== null) {
         const appeal = store.getAppeal(requested);
         if (!appeal || appeal.userId !== command.user.id || (command.guildId && command.guildId !== appeal.guildId)) throw new UserError(unavailable);
-        const original = validCase(store, appeal.caseId, command.user.id, command.guildId ?? undefined);
+        const original = validCase(store, appeal.caseId, command.user.id, appeal.guildId);
         await command.editReply({ embeds: [ticketEmbed(appeal, original)], allowedMentions: noMentions });
       } else {
         const appeals = command.guildId ? store.listAppeals(command.guildId, undefined, command.user.id) : store.listUserAppeals(command.user.id);
-        await respond(command, appeals.length ? appeals.map((appeal) => `工單 #${appeal.id} · 案件 #${appeal.caseId} · ${statusLabels[appeal.status]}`).join('\n') : '你尚未提交申訴工單。');
+        await respond(command, appeals.length ? appeals.map((appeal) => {
+          const original = validCase(store, appeal.caseId, command.user.id, appeal.guildId);
+          return `工單 #${appeal.id} · ${command.guildId ? '' : `伺服器 ${appeal.guildId} · `}案件 #${original.caseNumber} · ${statusLabels[appeal.status]}`;
+        }).join('\n') : '你尚未提交申訴工單。');
       }
       return;
     }
@@ -254,7 +277,10 @@ export async function handleAppealCommand(command: ChatInputCommandInteraction, 
       if (status !== 'open' && status !== 'accepted' && status !== 'rejected') throw new UserError('工單狀態無效。');
       const appeals = store.listAppeals(command.guildId, status);
       await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`申訴工單 · ${statusLabels[status]}`)
-        .setDescription(appeals.length ? appeals.map((appeal) => `**#${appeal.id}** · 案件 #${appeal.caseId} · <@${appeal.userId}>\n${truncate(escapeMarkdown(appeal.reason), 240)}`).join('\n\n') : '目前沒有符合條件的工單。')
+        .setDescription(appeals.length ? appeals.map((appeal) => {
+          const original = validCase(store, appeal.caseId, appeal.userId, appeal.guildId);
+          return `**#${appeal.id}** · 案件 #${original.caseNumber} · <@${appeal.userId}>\n${truncate(escapeMarkdown(appeal.reason), 240)}`;
+        }).join('\n\n') : '目前沒有符合條件的工單。')
         .setFooter({ text: '最多顯示最近 10 筆；使用 /appeal queue id 查看完整工單。' })], allowedMentions: noMentions });
       return;
     }
@@ -294,9 +320,16 @@ export async function handleAppealInteraction(interaction: Interaction, store: S
       await interaction.showModal(reviewModal(appeal, decision[2] as ReviewResult, interaction.user.id));
       return true;
     }
-    const submission = /^appeal:submit:([0-9]{17,20}):([0-9]{17,20})$/.exec(interaction.customId);
+    const submission = /^appeal:submit-local:([0-9]{17,20}):([0-9]{17,20})$/.exec(interaction.customId);
     if (submission) {
       await submitAppeal(interaction, store, submission[1]!, submission[2]!);
+      return true;
+    }
+    // A form opened before the migration still contains an internal ID. Its
+    // versioned route preserves that exact case rather than reinterpreting it.
+    const legacySubmission = /^appeal:submit:([0-9]{17,20}):([0-9]{17,20})$/.exec(interaction.customId);
+    if (legacySubmission) {
+      await submitAppeal(interaction, store, legacySubmission[1]!, legacySubmission[2]!, true);
       return true;
     }
     const decision = /^appeal:decision:([0-9]+):(accepted|rejected):([0-9]{17,20})$/.exec(interaction.customId);

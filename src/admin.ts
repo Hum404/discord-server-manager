@@ -47,7 +47,7 @@ function caseId(command: Command): number {
 }
 
 function caseEmbed(item: ModerationCase): EmbedBuilder {
-  const embed = new EmbedBuilder().setColor(0x5865f2).setTitle(`案件 #${item.id}`)
+  const embed = new EmbedBuilder().setColor(0x5865f2).setTitle(`本服案件 #${item.caseNumber}`)
     .addFields(
       { name: '操作', value: truncate(escapeMarkdown(item.action), 100) },
       { name: '對象', value: item.userId ? `<@${item.userId}>（${item.userId}）` : '頻道或伺服器設定' },
@@ -188,14 +188,14 @@ export async function handleAdminCommand(command: Command, store: Store): Promis
     const cases = selected ? store.listUserCases(selected.id, command.guildId, 10) : store.listCases(command.guildId, 10);
     await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器案件紀錄')
       .setDescription(cases.length ? truncate(cases.map((item) =>
-        `**#${item.id}** · ${truncate(escapeMarkdown(item.action), 60)} · ${item.userId ? `<@${item.userId}>` : '頻道／設定'} · 執行者 <@${item.moderatorId}>\n${truncate(escapeMarkdown(item.reason), 200)}`,
+        `**#${item.caseNumber}** · ${truncate(escapeMarkdown(item.action), 60)} · ${item.userId ? `<@${item.userId}>` : '頻道／設定'} · 執行者 <@${item.moderatorId}>\n${truncate(escapeMarkdown(item.reason), 200)}`,
       ).join('\n\n'), 3900) : '沒有符合條件的案件。')
-      .setFooter({ text: '顯示最近 10 筆；使用 /admin case id 查看完整案件。' })], allowedMentions: noMentions });
+      .setFooter({ text: '本服獨立編號，顯示最近 10 筆；使用 /admin case id 查看完整案件。' })], allowedMentions: noMentions });
     return;
   }
   if (subcommand === 'case') {
-    const item = store.getCase(caseId(command));
-    if (!item || item.guildId !== command.guildId) throw new UserError('找不到此伺服器的案件。');
+    const item = store.getGuildCase(command.guildId, caseId(command));
+    if (!item) throw new UserError('找不到此伺服器的案件。');
     await command.editReply({ embeds: [caseEmbed(item)], allowedMentions: noMentions });
     return;
   }

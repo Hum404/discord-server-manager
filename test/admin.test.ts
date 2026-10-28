@@ -153,6 +153,25 @@ test('admin case list filters optional member within current guild', withStore(a
   assert.doesNotMatch(JSON.stringify(f.replies), /其他成員|別服紀錄/);
 }));
 
+test('admin case numbers are local even when another guild has already created several cases', withStore(async (store) => {
+  const f = fixture('case');
+  for (let i = 0; i < 3; i++) {
+    store.addCase({ guildId: ids.otherGuild, moderatorId: ids.actor, userId: ids.target, action: 'warn', reason: '別服私密紀錄' });
+  }
+  const own = store.addCase({ guildId: ids.guild, moderatorId: ids.actor, userId: ids.target, action: 'warn', reason: '本服第一件' });
+  assert.equal(own.caseNumber, 1);
+  assert.notEqual(own.id, own.caseNumber);
+  f.state.id = 1;
+  await handleAdminCommand(f.command, store);
+  assert.match(JSON.stringify(f.replies), /本服案件 #1/);
+  assert.match(JSON.stringify(f.replies), /本服第一件/);
+  assert.doesNotMatch(JSON.stringify(f.replies), /別服私密紀錄/);
+  const listing = fixture('cases');
+  await handleAdminCommand(listing.command, store);
+  assert.match(JSON.stringify(listing.replies.at(-1)), /#1/);
+  assert.doesNotMatch(JSON.stringify(listing.replies.at(-1)), /#4/);
+}));
+
 test('Bot moderation grants cannot authorize native admin commands', withStore(async (store) => {
   const f = fixture('cases');
   f.actor.permissions.remove(PermissionFlagsBits.ManageGuild);

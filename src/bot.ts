@@ -203,7 +203,7 @@ async function configure(command: Command, context: Context, store: Store): Prom
     store.updateSettings(command.guildId, subcommand === 'logs'
       ? { logChannelId: selected?.id ?? null } : { welcomeChannelId: selected?.id ?? null });
     detail = selected ? `已設定${subcommand === 'logs' ? '管理紀錄' : '歡迎'}頻道為 <#${selected.id}>。`
-      : `已停用${subcommand === 'logs' ? '管理紀錄頻道' : '歡迎訊息'}。`;
+      : subcommand === 'logs' ? '已停用本服日誌頻道通知；本機案件仍會保存供查詢與申訴。' : '已停用歡迎訊息。';
   } else {
     throw new UserError('找不到此設定項目，請重新註冊指令。');
   }

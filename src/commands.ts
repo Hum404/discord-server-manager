@@ -116,7 +116,7 @@ export const commands = [
       subcommand.setName('view').setDescription('查看目前的伺服器設定'),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('logs').setDescription('設定管理紀錄頻道；不選頻道則停用')
+      subcommand.setName('logs').setDescription('設定本服日誌通知頻道；省略停用通知，本機案件仍保留')
         .addChannelOption((option) =>
           option.setName('channel').setDescription('管理紀錄發送至此頻道')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
@@ -186,7 +186,7 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand.setName('submit').setDescription('開啟表單，對自己的處罰案件提出申訴')
         .addIntegerOption((option) =>
-          option.setName('case').setDescription('處罰案件編號；留空使用最近的處罰')
+          option.setName('case').setDescription('該伺服器的處罰案件編號；留空使用最近的處罰')
             .setMinValue(1),
         ),
     )
@@ -374,7 +374,7 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('case').setDescription('查看本伺服器指定管理案件的完整紀錄')
-        .addIntegerOption((option) => option.setName('id').setDescription('管理案件編號').setMinValue(1).setRequired(true)),
+        .addIntegerOption((option) => option.setName('id').setDescription('本伺服器獨立的管理案件編號').setMinValue(1).setRequired(true)),
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('warning-remove').setDescription('確認後移除一筆警告，保留原案件並記錄移除原因')

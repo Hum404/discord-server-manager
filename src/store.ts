@@ -25,7 +25,9 @@ export interface Warning {
 }
 
 export interface ModerationCase {
+  /** Internal database key; public case numbers are scoped to guildId. */
   id: number;
+  caseNumber: number;
   guildId: string;
   action: string;
   userId: string | null;
@@ -99,7 +101,7 @@ type NewWarning = Pick<Warning, 'guildId' | 'userId' | 'moderatorId' | 'reason'>
 type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & { details?: string };
 
 const warningColumns = 'id, guild_id AS guildId, user_id AS userId, moderator_id AS moderatorId, reason, created_at AS createdAt';
-const caseColumns = 'id, guild_id AS guildId, action, user_id AS userId, moderator_id AS moderatorId, reason, details, created_at AS createdAt';
+const caseColumns = 'id, case_number AS caseNumber, guild_id AS guildId, action, user_id AS userId, moderator_id AS moderatorId, reason, details, created_at AS createdAt';
 const grantColumns = 'guild_id AS guildId, user_id AS userId, scope, granted_by AS grantedBy, created_at AS createdAt';
 const appealColumns = `id, guild_id AS guildId, case_id AS caseId, user_id AS userId, reason, status,
   created_at AS createdAt, reviewer_id AS reviewerId, response, reviewed_at AS reviewedAt,
@@ -215,6 +217,7 @@ export class Store {
         CREATE INDEX IF NOT EXISTS warnings_guild_user ON warnings(guild_id, user_id, id DESC);
         CREATE TABLE IF NOT EXISTS moderation_cases (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          case_number INTEGER CHECK(case_number BETWEEN 1 AND 9007199254740991),
           guild_id TEXT NOT NULL,
           action TEXT NOT NULL CHECK(length(action) BETWEEN 1 AND 64),
           user_id TEXT,
@@ -298,8 +301,44 @@ export class Store {
           this.db.exec(`ALTER TABLE guild_settings ADD COLUMN ${column} TEXT`);
         }
       }
+      this.migrateCaseNumbers();
     } catch (error) {
       this.db.close();
+      throw error;
+    }
+  }
+
+  /** Preserve internal keys and appeal links while introducing independent public sequences. */
+  private migrateCaseNumbers(): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(moderation_cases)').all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'case_number')) {
+        this.db.exec('ALTER TABLE moderation_cases ADD COLUMN case_number INTEGER CHECK(case_number BETWEEN 1 AND 9007199254740991)');
+      }
+      // Materializing the old maxima keeps the UPDATE from counting rows it just changed.
+      // A partial migration keeps its existing public numbers; only missing rows are appended.
+      this.db.exec(`
+        WITH numbered AS MATERIALIZED (
+          SELECT pending.id,
+            COALESCE(existing.maximum, 0) + ROW_NUMBER() OVER (
+              PARTITION BY pending.guild_id ORDER BY pending.id
+            ) AS number
+          FROM moderation_cases AS pending
+          LEFT JOIN (
+            SELECT guild_id, MAX(case_number) AS maximum FROM moderation_cases
+            WHERE case_number IS NOT NULL GROUP BY guild_id
+          ) AS existing ON existing.guild_id = pending.guild_id
+          WHERE pending.case_number IS NULL
+        )
+        UPDATE moderation_cases SET case_number = (
+          SELECT number FROM numbered WHERE numbered.id = moderation_cases.id
+        ) WHERE case_number IS NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS cases_guild_number ON moderation_cases(guild_id, case_number);
+      `);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
       throw error;
     }
   }
@@ -411,11 +450,22 @@ export class Store {
       throw new TypeError('Case details must contain at most 4000 characters.');
     }
     const createdAt = new Date().toISOString();
-    const result = this.db.prepare(`
-      INSERT INTO moderation_cases(guild_id, action, user_id, moderator_id, reason, details, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(guildId, action, userId, moderatorId, reason, details, createdAt);
-    return { id: Number(result.lastInsertRowid), guildId, action, userId, moderatorId, reason, details, createdAt };
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const previous = this.db.prepare('SELECT COALESCE(MAX(case_number), 0) AS maximum FROM moderation_cases WHERE guild_id = ?')
+        .get(guildId) as { maximum: number };
+      const caseNumber = positiveId(previous.maximum + 1);
+      const result = this.db.prepare(`
+        INSERT INTO moderation_cases(case_number, guild_id, action, user_id, moderator_id, reason, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(caseNumber, guildId, action, userId, moderatorId, reason, details, createdAt);
+      const id = positiveId(Number(result.lastInsertRowid));
+      this.db.exec('COMMIT');
+      return { id, caseNumber, guildId, action, userId, moderatorId, reason, details, createdAt };
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   listCases(guildId: string, limit = 10): ModerationCase[] {
@@ -428,6 +478,21 @@ export class Store {
   getCase(id: number): ModerationCase | null {
     return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases WHERE id = ?`)
       .get(positiveId(id)) as unknown as ModerationCase | undefined ?? null;
+  }
+
+  getGuildCase(guildId: string, caseNumber: number): ModerationCase | null {
+    identifier(guildId);
+    positiveId(caseNumber);
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases WHERE guild_id = ? AND case_number = ?`)
+      .get(guildId, caseNumber) as unknown as ModerationCase | undefined ?? null;
+  }
+
+  /** DM lookups must match the applicant as well as the public number; callers resolve guild ambiguity. */
+  findUserCasesByNumber(userId: string, caseNumber: number): ModerationCase[] {
+    identifier(userId);
+    positiveId(caseNumber);
+    return this.db.prepare(`SELECT ${caseColumns} FROM moderation_cases WHERE user_id = ? AND case_number = ? ORDER BY id DESC`)
+      .all(userId, caseNumber) as unknown as ModerationCase[];
   }
 
   listUserCases(userId: string, guildId?: string, limit = 10): ModerationCase[] {

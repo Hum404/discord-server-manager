@@ -135,6 +135,16 @@ function content(replies: Payload[]): string {
   return replies.map((reply) => String(reply.content ?? '')).join('\n');
 }
 
+function formCaseNumber(modal: { components?: unknown[] } | undefined): string | undefined {
+  const rows = modal?.components as Array<{ components: Array<{ custom_id: string; value: string }> }> | undefined;
+  return rows?.[0]?.components[0]?.value;
+}
+
+function embeds(payloads: Payload[]): Array<{ fields?: Array<{ name: string; value: string }>; description?: string }> {
+  return payloads.flatMap((payload) => (payload.embeds ?? []) as Array<{ toJSON(): { fields?: Array<{ name: string; value: string }>; description?: string } }>)
+    .map((embed) => embed.toJSON());
+}
+
 test('privacy fails closed for missing everyone and unknown role permissions', async () => {
   const missing = fixture();
   missing.guild.roles.everyone = undefined as unknown as typeof missing.guild.roles.everyone;
@@ -164,7 +174,7 @@ test('DM appeal buttons are bound to the applicant and original case guild', asy
     const own = fixture();
     const customId = `appeal:open:${ids.guild}:${ids.user}`;
     assert.equal(await handleAppealInteraction(own.interaction('button', { customId }) as unknown as Interaction, store), true);
-    assert.equal(own.modals[0]?.custom_id, `appeal:submit:${ids.guild}:${ids.user}`);
+    assert.equal(own.modals[0]?.custom_id, `appeal:submit-local:${ids.guild}:${ids.user}`);
     for (const options of [{ userId: ids.other }, { guildId: ids.otherGuild }]) {
       const denied = fixture();
       await handleAppealInteraction(denied.interaction('button', { customId, ...options }) as unknown as Interaction, store);
@@ -180,11 +190,11 @@ test('submit opens a form only for an owned appealable case in the current guild
   try {
     const own = originalCase(store);
     const other = originalCase(store, ids.other);
-    const otherGuild = originalCase(store, ids.user, ids.otherGuild);
+    originalCase(store, ids.user, ids.otherGuild);
     const valid = fixture();
-    await handleAppealCommand(valid.interaction('command', { integers: { case: own.id } }) as unknown as ChatInputCommandInteraction, store);
+    await handleAppealCommand(valid.interaction('command', { guildId: ids.guild, integers: { case: own.caseNumber } }) as unknown as ChatInputCommandInteraction, store);
     assert.equal(valid.modals.length, 1);
-    for (const id of [other.id, otherGuild.id]) {
+    for (const id of [other.caseNumber, 999]) {
       const denied = fixture();
       await handleAppealCommand(denied.interaction('command', { guildId: ids.guild, integers: { case: id } }) as unknown as ChatInputCommandInteraction, store);
       assert.equal(denied.modals.length, 0);
@@ -199,7 +209,7 @@ test('submission persists without a notification channel and duplicate submissio
   try {
     const original = originalCase(store);
     const f = fixture();
-    const options = { customId: `appeal:submit:${ids.guild}:${ids.user}`, fields: { case_id: String(original.id), reason: 'Please reconsider @everyone' } };
+    const options = { customId: `appeal:submit-local:${ids.guild}:${ids.user}`, fields: { case_id: String(original.caseNumber), reason: 'Please reconsider @everyone' } };
     await handleAppealInteraction(f.interaction('modal', options) as unknown as Interaction, store);
     const appeal = store.getAppealForCase(ids.guild, original.id, ids.user);
     assert.ok(appeal);
@@ -222,8 +232,8 @@ test('private staff notification persists message binding and suppresses all men
     const original = originalCase(store);
     const f = fixture();
     await handleAppealInteraction(f.interaction('modal', {
-      customId: `appeal:submit:${ids.guild}:${ids.user}`,
-      fields: { case_id: String(original.id), reason: 'Private explanation @everyone' },
+      customId: `appeal:submit-local:${ids.guild}:${ids.user}`,
+      fields: { case_id: String(original.caseNumber), reason: 'Private explanation @everyone' },
     }) as unknown as Interaction, store);
     const appeal = store.getAppealForCase(ids.guild, original.id, ids.user)!;
     assert.equal(appeal.channelId, ids.channel);
@@ -247,8 +257,8 @@ test('public, unknown or non-staff role visibility and failed posting never leak
       f.state.roleLeak = failure === 'role';
       f.state.postFails = failure === 'post';
       await handleAppealInteraction(f.interaction('modal', {
-        customId: `appeal:submit:${ids.guild}:${ids.user}`,
-        fields: { case_id: String(original.id), reason: 'Never post this publicly' },
+        customId: `appeal:submit-local:${ids.guild}:${ids.user}`,
+        fields: { case_id: String(original.caseNumber), reason: 'Never post this publicly' },
       }) as unknown as Interaction, store);
       assert.equal(store.listAppeals(ids.guild).length, 1);
       assert.equal(f.sent.length, 0);
@@ -264,13 +274,13 @@ test('a forged submission cannot change applicant, guild or another user case', 
     const original = originalCase(store);
     const other = originalCase(store, ids.other);
     for (const options of [
-      { userId: ids.other, caseId: original.id },
-      { guildId: ids.otherGuild, caseId: original.id },
-      { caseId: other.id },
+      { userId: ids.other, caseId: original.caseNumber },
+      { guildId: ids.otherGuild, caseId: original.caseNumber },
+      { caseId: other.caseNumber },
     ]) {
       const f = fixture();
       await handleAppealInteraction(f.interaction('modal', {
-        customId: `appeal:submit:${ids.guild}:${ids.user}`,
+        customId: `appeal:submit-local:${ids.guild}:${ids.user}`,
         ...options, fields: { case_id: String(options.caseId), reason: 'Forged submission' },
       }) as unknown as Interaction, store);
       assert.equal(store.listAppeals(ids.guild).length, 0);
@@ -381,4 +391,117 @@ test('punishment notifications contain a bound DM appeal entry and closed DMs do
   target.send = async () => { throw { code: 50007 }; };
   assert.equal(await notifyPunishment(target as unknown as GuildMember, 'kick', 'Original reason'), false);
   assert.equal(calls, 0);
+});
+
+test('guild submission resolves the displayed local number while preserving its internal case foreign key', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (let index = 0; index < 3; index++) originalCase(store, ids.other, ids.otherGuild);
+    const original = originalCase(store);
+    assert.equal(original.id, 4);
+    assert.equal(original.caseNumber, 1);
+    const f = fixture();
+    store.updateSettings(ids.guild, { appealChannelId: ids.channel });
+    await handleAppealCommand(f.interaction('command', { guildId: ids.guild, integers: { case: 1 } }) as unknown as ChatInputCommandInteraction, store);
+    assert.equal(f.modals[0]?.custom_id, `appeal:submit-local:${ids.guild}:${ids.user}`);
+    assert.equal(formCaseNumber(f.modals[0]), '1');
+    await handleAppealInteraction(f.interaction('modal', {
+      customId: f.modals[0]!.custom_id, guildId: ids.guild,
+      fields: { case_id: '1', reason: 'The displayed local case' },
+    }) as unknown as Interaction, store);
+    const appeal = store.listAppeals(ids.guild)[0]!;
+    assert.equal(appeal.caseId, original.id);
+    assert.equal(store.getAppealForCase(ids.guild, original.id, ids.user)?.id, appeal.id);
+    assert.equal(embeds(f.sent)[0]?.fields?.find((field) => field.name === '原案件')?.value, '#1 · 封鎖');
+    assert.match(store.listCases(ids.guild).find((item) => item.action === 'appeal-submit')?.details ?? '', /原案件 #1$/);
+    await handleAppealCommand(f.interaction('command', {
+      guildId: ids.guild, userId: ids.reviewer, subcommand: 'queue',
+    }) as unknown as ChatInputCommandInteraction, store);
+    assert.match(embeds(f.replies).at(-1)?.description ?? '', /案件 #1/);
+    assert.doesNotMatch(embeds(f.replies).at(-1)?.description ?? '', /案件 #4/);
+  } finally { store.close(); }
+});
+
+test('equal local case numbers in different guilds are disambiguated before a DM form opens', async () => {
+  const store = new Store(':memory:');
+  try {
+    const first = originalCase(store);
+    const second = originalCase(store, ids.user, ids.otherGuild);
+    assert.equal(first.caseNumber, second.caseNumber);
+    const f = fixture();
+    await handleAppealCommand(f.interaction('command', { integers: { case: 1 } }) as unknown as ChatInputCommandInteraction, store);
+    assert.equal(f.modals.length, 0);
+    assert.match(content(f.replies), /多個伺服器都有案件 #1/);
+    assert.match(content(f.replies), new RegExp(ids.guild));
+    assert.match(content(f.replies), new RegExp(ids.otherGuild));
+    assert.doesNotMatch(content(f.replies), /Original private/);
+    await handleAppealInteraction(f.interaction('button', {
+      customId: `appeal:open:${ids.otherGuild}:${ids.user}`,
+    }) as unknown as Interaction, store);
+    assert.equal(f.modals[0]?.custom_id, `appeal:submit-local:${ids.otherGuild}:${ids.user}`);
+    assert.equal(formCaseNumber(f.modals[0]), '1');
+    await handleAppealInteraction(f.interaction('modal', {
+      customId: f.modals[0]!.custom_id, fields: { case_id: '1', reason: 'Second server case' },
+    }) as unknown as Interaction, store);
+    assert.equal(store.listAppeals(ids.otherGuild)[0]?.caseId, second.id);
+    assert.deepEqual(store.listAppeals(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('DM number lookup considers only the applicant cases and latest default keeps its guild binding', async () => {
+  const store = new Store(':memory:');
+  try {
+    const own = originalCase(store);
+    originalCase(store, ids.other, ids.otherGuild);
+    const f = fixture();
+    await handleAppealCommand(f.interaction('command', { integers: { case: 1 } }) as unknown as ChatInputCommandInteraction, store);
+    assert.equal(f.modals[0]?.custom_id, `appeal:submit-local:${own.guildId}:${ids.user}`);
+    const latest = originalCase(store, ids.user, ids.otherGuild);
+    await handleAppealCommand(f.interaction('command') as unknown as ChatInputCommandInteraction, store);
+    assert.equal(f.modals[1]?.custom_id, `appeal:submit-local:${latest.guildId}:${ids.user}`);
+    assert.equal(formCaseNumber(f.modals[1]), String(latest.caseNumber));
+  } finally { store.close(); }
+});
+
+test('DM appeal status labels equal local case numbers with their owning guilds', async () => {
+  const store = new Store(':memory:');
+  try {
+    const first = originalCase(store);
+    const second = originalCase(store, ids.user, ids.otherGuild);
+    store.createAppeal({ guildId: first.guildId, userId: ids.user, caseId: first.id, reason: 'First server' });
+    store.createAppeal({ guildId: second.guildId, userId: ids.user, caseId: second.id, reason: 'Second server' });
+    const f = fixture();
+    await handleAppealCommand(f.interaction('command', { subcommand: 'status' }) as unknown as ChatInputCommandInteraction, store);
+    assert.match(content(f.replies), new RegExp(`伺服器 ${ids.guild} · 案件 #1`));
+    assert.match(content(f.replies), new RegExp(`伺服器 ${ids.otherGuild} · 案件 #1`));
+    assert.doesNotMatch(content(f.replies), /案件 #2/);
+    const guildView = fixture();
+    await handleAppealCommand(guildView.interaction('command', { guildId: ids.guild, subcommand: 'status' }) as unknown as ChatInputCommandInteraction, store);
+    assert.match(content(guildView.replies), /案件 #1/);
+    assert.doesNotMatch(content(guildView.replies), new RegExp(ids.otherGuild));
+  } finally { store.close(); }
+});
+
+test('a pre-migration global-ID modal keeps its exact case instead of being reinterpreted as a local number', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (let index = 0; index < 3; index++) originalCase(store, ids.other, ids.otherGuild);
+    const original = originalCase(store);
+    for (let index = 0; index < 3; index++) originalCase(store);
+    const later = store.getGuildCase(ids.guild, original.id)!;
+    assert.notEqual(later.id, original.id);
+    const f = fixture();
+    await handleAppealInteraction(f.interaction('modal', {
+      customId: `appeal:submit:${ids.guild}:${ids.user}`,
+      fields: { case_id: String(original.id), reason: 'An already opened old form' },
+    }) as unknown as Interaction, store);
+    assert.equal(store.getAppealForCase(ids.guild, original.id, ids.user)?.caseId, original.id);
+    assert.equal(store.getAppealForCase(ids.guild, later.id, ids.user), null);
+    const denied = fixture();
+    await handleAppealInteraction(denied.interaction('modal', {
+      customId: `appeal:submit:${ids.guild}:${ids.user}`,
+      fields: { case_id: '1', reason: 'A foreign legacy ID' },
+    }) as unknown as Interaction, store);
+    assert.match(content(denied.replies), /找不到可供你申訴/);
+  } finally { store.close(); }
 });
