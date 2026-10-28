@@ -15,6 +15,7 @@ import { handleAppealCommand, handleAppealInteraction, notifyPunishment } from '
 import { handleSubareaCommand } from './subareas.js';
 import { scopeForCommand } from './domain.js';
 import { assertPrivateAppealChannel } from './appeal-privacy.js';
+import { handleAdminCommand } from './admin.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -143,6 +144,7 @@ async function configure(command: Command, context: Context, store: Store): Prom
         { name: '歡迎頻道', value: settings.welcomeChannelId ? `<#${settings.welcomeChannelId}>` : '未啟用' },
         { name: '申訴工單頻道', value: settings.appealChannelId ? `<#${settings.appealChannelId}>` : '未設定；可用 /appeal queue 查看' },
         { name: '子區分類', value: settings.subareaCategoryId ? `<#${settings.subareaCategoryId}>` : '未啟用子區建立' },
+        { name: '子區論壇', value: settings.subareaForumId ? `<#${settings.subareaForumId}>` : '未設定' },
         { name: '歡迎內容', value: truncate(escapeMarkdown(settings.welcomeMessage), 1024) },
       )], allowedMentions: noMentions });
     return;
@@ -150,6 +152,7 @@ async function configure(command: Command, context: Context, store: Store): Prom
   let detail: string;
   if (subcommand === 'subareas') {
     const selected = command.options.getChannel('category');
+    const selectedForum = command.options.getChannel('forum');
     if (selected) {
       const category = await command.guild.channels.fetch(selected.id, { force: true });
       if (!category || category.type !== ChannelType.GuildCategory) throw new UserError('請選擇本伺服器的分類。');
@@ -157,8 +160,20 @@ async function configure(command: Command, context: Context, store: Store): Prom
         PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles,
       ]));
     }
-    store.updateSettings(command.guildId, { subareaCategoryId: selected?.id ?? null });
-    detail = selected ? `已設定子區分類為 <#${selected.id}>。` : '已停用用戶建立新子區；既有子區仍可管理。';
+    if (selectedForum) {
+      const forum = await command.guild.channels.fetch(selectedForum.id, { force: true });
+      if (!forum || forum.type !== ChannelType.GuildForum) throw new UserError('請選擇本伺服器的論壇頻道。');
+      assertPermissions(requireBotPermissions(context.bot, forum, [PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads]));
+    }
+    const refreshed = await getContext(command, store);
+    if (refreshed.actor.id !== command.guild.ownerId && !refreshed.actor.permissions.has(PermissionFlagsBits.ManageGuild)) {
+      throw new UserError('你的設定權限已變更，未修改子區設定。');
+    }
+    store.updateSettings(command.guildId, { subareaCategoryId: selected?.id ?? null, subareaForumId: selectedForum?.id ?? null });
+    detail = selected || selectedForum
+      ? `已更新子區建立範圍：${selected ? `分類 <#${selected.id}>` : ''}${selected && selectedForum ? '、' : ''}${selectedForum ? `論壇 <#${selectedForum.id}>` : ''}。`
+      : '已停用用戶建立新子區；既有子區仍可管理。';
   } else if (subcommand === 'appeals') {
     const selected = command.options.getChannel('channel');
     if (selected) {
@@ -205,7 +220,9 @@ async function run(command: Command, store: Store): Promise<void> {
         { name: '成員管理', value: '`/warn` 新增警告\n`/warnings` 最近 10 筆警告\n`/timeout` 禁言（最長 28 天）\n`/untimeout` 解除禁言\n`/kick` 踢出\n`/ban` 封鎖\n`/unban` 以 ID 解除封鎖' },
         { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
-        { name: '獨立子區', value: '`/config subareas` 啟用子區分類\n`/subarea create` 建立子區\n`/subarea mute`、`/subarea kick` 限制此子區的用戶\n`/subarea unmute`、`/subarea unkick` 解除限制\n`/subarea tag`、`/subarea role-tag`、`/subarea announce` 建立者標註' },
+        { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`unpin` 建立者置頂訊息\n`/subarea mute`、`kick` 管理區內成員\n`/subarea delegate`、`undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
+        { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`role-tag`、`announce` 建立者提及通知' },
+        { name: '管理員工具', value: '`/admin cases`、`case` 案件查詢\n`/admin warning-remove` 撤銷警告紀錄\n`/admin role-add`、`role-remove` 管理身分組\n`/admin channel-edit` 編輯文字頻道' },
         { name: '使用提醒', value: '踢出、封鎖、清理訊息須在 30 秒內確認。歡迎內容支援 `{user}`、`{server}`、`{count}`。設定頻道時留空可停用。' },
       )] });
     return;
@@ -218,6 +235,7 @@ async function run(command: Command, store: Store): Promise<void> {
   if (command.commandName === 'config') return configure(command, context, store);
   if (command.commandName === 'access') return handleAccessCommand(command, store);
   if (command.commandName === 'subarea') return handleSubareaCommand(command, store);
+  if (command.commandName === 'admin') return handleAdminCommand(command, store);
   if (command.commandName === 'warnings') {
     const user = command.options.getUser('user', true);
     const warnings = store.listWarnings(command.guildId, user.id, 10);

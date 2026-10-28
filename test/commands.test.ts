@@ -33,7 +33,7 @@ function getSubOption(commandName: string, subcommandName: string, optionName: s
 test('serializes the command allowlist with appeals available in bot DMs', () => {
   assert.deepEqual(serialized.map((command) => command.name).sort(), [
     'help', 'ping', 'warn', 'warnings', 'timeout', 'untimeout',
-    'kick', 'ban', 'unban', 'clear', 'config', 'access', 'appeal', 'subarea',
+    'kick', 'ban', 'unban', 'clear', 'config', 'access', 'appeal', 'subarea', 'admin',
   ].sort());
   for (const command of serialized) {
     assert.deepEqual(command.contexts, command.name === 'appeal'
@@ -56,11 +56,12 @@ test('delegatable management commands remain visible while preserving runtime pe
     ['clear', PermissionFlagsBits.ManageMessages],
     ['config', PermissionFlagsBits.ManageGuild],
     ['access', PermissionFlagsBits.Administrator],
+    ['admin', PermissionFlagsBits.ManageGuild],
   ]);
   for (const command of serialized) {
     const permission = expected.get(command.name);
     assert.equal(permissionForCommand(command.name), permission ?? null);
-    if (command.name === 'config' || command.name === 'access') {
+    if (['config', 'access', 'admin'].includes(command.name)) {
       assert.equal(command.default_member_permissions, permission!.toString(), `/${command.name} must keep its native restriction`);
     } else {
       assert.ok(command.default_member_permissions == null,
@@ -190,7 +191,8 @@ test('appeal submissions need no staff permission and review input is bounded', 
 });
 
 test('subarea creation, assignment and local restrictions have explicit targets and bounded input', () => {
-  const expectedSubcommands = ['create', 'assign', 'list', 'mute', 'unmute', 'kick', 'unkick', 'tag', 'role-tag', 'announce'];
+  const expectedSubcommands = ['create', 'assign', 'list', 'mute', 'unmute', 'kick', 'unkick', 'tag', 'role-tag', 'announce',
+    'pin', 'unpin', 'delete-message', 'slowmode', 'rename', 'lock', 'unlock', 'delete', 'delegate', 'undelegate', 'delegates', 'info'];
   assert.deepEqual(getCommand('subarea').options?.map((option) => option.name).sort(), expectedSubcommands.sort());
   const name = getSubOption('subarea', 'create', 'name');
   assert.ok(name.type === ApplicationCommandOptionType.String);
@@ -199,7 +201,7 @@ test('subarea creation, assignment and local restrictions have explicit targets 
   const channel = getSubOption('subarea', 'assign', 'channel');
   assert.ok(channel.type === ApplicationCommandOptionType.Channel);
   assert.equal(channel.required, true);
-  assert.deepEqual(channel.channel_types, [ChannelType.GuildText]);
+  assert.deepEqual(channel.channel_types, [ChannelType.GuildText, ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
   const owner = getSubOption('subarea', 'assign', 'user');
   assert.ok(owner.type === ApplicationCommandOptionType.User);
   assert.equal(owner.required, true);
@@ -232,4 +234,96 @@ test('subarea mentions specify the audience and limit notification content', () 
   assert.ok(audience.type === ApplicationCommandOptionType.String);
   assert.equal(audience.required, true);
   assert.deepEqual(audience.choices?.map((choice) => choice.value).sort(), ['everyone', 'here']);
+});
+
+
+test('subarea destinations preserve text channels and allow explicit thread or forum creation', () => {
+  const forum = getSubOption('config', 'subareas', 'forum');
+  assert.ok(forum.type === ApplicationCommandOptionType.Channel);
+  assert.notEqual(forum.required, true);
+  assert.deepEqual(forum.channel_types, [ChannelType.GuildForum]);
+  const type = getSubOption('subarea', 'create', 'type');
+  assert.ok(type.type === ApplicationCommandOptionType.String);
+  assert.notEqual(type.required, true);
+  assert.deepEqual(type.choices?.map((choice) => choice.value), ['text', 'thread', 'forum']);
+  const parent = getSubOption('subarea', 'create', 'parent');
+  assert.ok(parent.type === ApplicationCommandOptionType.Channel);
+  assert.deepEqual(parent.channel_types, [ChannelType.GuildText, ChannelType.GuildForum]);
+  const content = getSubOption('subarea', 'create', 'content');
+  assert.ok(content.type === ApplicationCommandOptionType.String);
+  assert.equal(content.max_length, 2000);
+  assert.notEqual(content.required, true);
+});
+
+test('local tools distinguish message pinning, slowmode and delegate targets', () => {
+  for (const operation of ['pin', 'unpin', 'delete-message']) {
+    const message = getSubOption('subarea', operation, 'message');
+    assert.ok(message.type === ApplicationCommandOptionType.String);
+    assert.equal(message.required, true);
+    assert.equal(message.max_length, 200);
+  }
+  const seconds = getSubOption('subarea', 'slowmode', 'seconds');
+  assert.ok(seconds.type === ApplicationCommandOptionType.Integer);
+  assert.equal(seconds.min_value, 0);
+  assert.equal(seconds.max_value, 21600);
+  assert.equal(seconds.required, true);
+  for (const operation of ['delegate', 'undelegate']) {
+    const user = getSubOption('subarea', operation, 'user');
+    assert.ok(user.type === ApplicationCommandOptionType.User);
+    assert.equal(user.required, true);
+  }
+  assert.match(getOption('subarea', 'pin').description, /置頂/);
+  assert.match(getOption('subarea', 'tag').description, /提及/);
+});
+
+test('administrator operations bound case IDs, native-management inputs and editable channel types', () => {
+  assert.deepEqual(getCommand('admin').options?.map((option) => option.name).sort(),
+    ['cases', 'case', 'warning-remove', 'role-add', 'role-remove', 'channel-edit'].sort());
+  for (const operation of ['case', 'warning-remove']) {
+    const id = getSubOption('admin', operation, 'id');
+    assert.ok(id.type === ApplicationCommandOptionType.Integer);
+    assert.equal(id.min_value, 1);
+    assert.equal(id.required, true);
+  }
+  for (const operation of ['warning-remove', 'role-add', 'role-remove', 'channel-edit']) {
+    const reason = getSubOption('admin', operation, 'reason');
+    assert.ok(reason.type === ApplicationCommandOptionType.String);
+    assert.equal(reason.required, true);
+    assert.equal(reason.max_length, 512);
+  }
+  for (const operation of ['role-add', 'role-remove']) {
+    const user = getSubOption('admin', operation, 'user');
+    const role = getSubOption('admin', operation, 'role');
+    assert.ok(user.type === ApplicationCommandOptionType.User);
+    assert.ok(role.type === ApplicationCommandOptionType.Role);
+    assert.equal(user.required, true);
+    assert.equal(role.required, true);
+  }
+  const channel = getSubOption('admin', 'channel-edit', 'channel');
+  assert.ok(channel.type === ApplicationCommandOptionType.Channel);
+  assert.equal(channel.required, true);
+  assert.deepEqual(channel.channel_types, [ChannelType.GuildText, ChannelType.GuildAnnouncement]);
+  const slowmode = getSubOption('admin', 'channel-edit', 'slowmode');
+  assert.ok(slowmode.type === ApplicationCommandOptionType.Integer);
+  assert.equal(slowmode.min_value, 0);
+  assert.equal(slowmode.max_value, 21600);
+  const nsfw = getSubOption('admin', 'channel-edit', 'nsfw');
+  assert.ok(nsfw.type === ApplicationCommandOptionType.Boolean);
+  assert.notEqual(nsfw.required, true);
+});
+
+test('nested command schemas obey Discord option limits and required-before-optional ordering', () => {
+  function checkOptions(options: NonNullable<(typeof serialized)[number]['options']>): void {
+    assert.ok(options.length <= 25, 'Discord supports at most 25 options per command');
+    let optionalSeen = false;
+    for (const option of options) {
+      if (option.type === ApplicationCommandOptionType.Subcommand || option.type === ApplicationCommandOptionType.SubcommandGroup) {
+        checkOptions(option.options ?? []);
+      } else {
+        if (!option.required) optionalSeen = true;
+        else assert.equal(optionalSeen, false, `required option ${option.name} follows an optional option`);
+      }
+    }
+  }
+  for (const command of serialized) checkOptions(command.options ?? []);
 });

@@ -12,6 +12,7 @@ export interface GuildSettings {
   welcomeMessage: string;
   appealChannelId: string | null;
   subareaCategoryId: string | null;
+  subareaForumId: string | null;
 }
 
 export interface Warning {
@@ -64,6 +65,22 @@ export interface Subarea {
   createdAt: string;
 }
 
+export interface SubareaDelegate {
+  guildId: string;
+  channelId: string;
+  userId: string;
+  grantedBy: string;
+  createdAt: string;
+}
+
+export interface SubareaLock {
+  guildId: string;
+  channelId: string;
+  overwrites: string;
+  lockedBy: string;
+  createdAt: string;
+}
+
 export interface SubareaRestriction {
   guildId: string;
   channelId: string;
@@ -77,7 +94,7 @@ export interface SubareaRestriction {
   updatedAt: string;
 }
 
-type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId'>>;
+type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId' | 'subareaForumId'>>;
 type NewWarning = Pick<Warning, 'guildId' | 'userId' | 'moderatorId' | 'reason'>;
 type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & { details?: string };
 
@@ -88,6 +105,8 @@ const appealColumns = `id, guild_id AS guildId, case_id AS caseId, user_id AS us
   created_at AS createdAt, reviewer_id AS reviewerId, response, reviewed_at AS reviewedAt,
   channel_id AS channelId, message_id AS messageId`;
 const subareaColumns = 'guild_id AS guildId, channel_id AS channelId, owner_id AS ownerId, created_at AS createdAt';
+const delegateColumns = 'guild_id AS guildId, channel_id AS channelId, user_id AS userId, granted_by AS grantedBy, created_at AS createdAt';
+const lockColumns = 'guild_id AS guildId, channel_id AS channelId, overwrites, locked_by AS lockedBy, created_at AS createdAt';
 const restrictionColumns = `guild_id AS guildId, channel_id AS channelId, user_id AS userId, muted, kicked,
   original_allow AS originalAllow, original_deny AS originalDeny, moderator_id AS moderatorId,
   reason, updated_at AS updatedAt`;
@@ -131,6 +150,32 @@ function permissionBits(value: string | null): void {
   }
 }
 
+function lockOverwrites(value: string): void {
+  requiredText(value, 'Lock permission baseline', 1_000_000);
+  let parsed: unknown;
+  try { parsed = JSON.parse(value) as unknown; }
+  catch { throw new TypeError('Lock permission baseline must be a JSON array.'); }
+  if (!Array.isArray(parsed) || parsed.length > 1000) {
+    throw new TypeError('Lock permission baseline must contain at most 1000 overwrites.');
+  }
+  const seen = new Set<string>();
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new TypeError('Lock permission baseline entries must be overwrite objects.');
+    }
+    const overwrite = entry as Record<string, unknown>;
+    identifier(overwrite.id as string);
+    if ((overwrite.type !== 0 && overwrite.type !== 1) || typeof overwrite.allow !== 'string'
+      || typeof overwrite.deny !== 'string' || seen.has(overwrite.id as string)
+      || (overwrite.existed !== undefined && typeof overwrite.existed !== 'boolean')) {
+      throw new TypeError('Lock permission baseline must contain unique typed overwrites.');
+    }
+    permissionBits(overwrite.allow);
+    permissionBits(overwrite.deny);
+    seen.add(overwrite.id as string);
+  }
+}
+
 function hydrateRestriction(row: unknown): SubareaRestriction | null {
   if (row === undefined) return null;
   const value = row as Omit<SubareaRestriction, 'muted' | 'kicked'> & { muted: number; kicked: number };
@@ -156,7 +201,8 @@ export class Store {
           welcome_channel_id TEXT,
           welcome_message TEXT NOT NULL CHECK(length(welcome_message) BETWEEN 1 AND 2000),
           appeal_channel_id TEXT,
-          subarea_category_id TEXT
+          subarea_category_id TEXT,
+          subarea_forum_id TEXT
         );
         CREATE TABLE IF NOT EXISTS warnings (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +258,24 @@ export class Store {
           PRIMARY KEY (guild_id, channel_id)
         );
         CREATE INDEX IF NOT EXISTS subareas_owner ON subareas(guild_id, owner_id);
+        CREATE TABLE IF NOT EXISTS subarea_delegates (
+          guild_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          granted_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (guild_id, channel_id, user_id),
+          FOREIGN KEY (guild_id, channel_id) REFERENCES subareas(guild_id, channel_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS subarea_locks (
+          guild_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          overwrites TEXT NOT NULL,
+          locked_by TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (guild_id, channel_id),
+          FOREIGN KEY (guild_id, channel_id) REFERENCES subareas(guild_id, channel_id) ON DELETE CASCADE
+        );
         CREATE TABLE IF NOT EXISTS subarea_restrictions (
           guild_id TEXT NOT NULL,
           channel_id TEXT NOT NULL,
@@ -229,7 +293,7 @@ export class Store {
       `);
       // Old installations have only the initial four settings columns.
       const settingsColumns = this.db.prepare('PRAGMA table_info(guild_settings)').all() as Array<{ name: string }>;
-      for (const column of ['appeal_channel_id', 'subarea_category_id']) {
+      for (const column of ['appeal_channel_id', 'subarea_category_id', 'subarea_forum_id']) {
         if (!settingsColumns.some((entry) => entry.name === column)) {
           this.db.exec(`ALTER TABLE guild_settings ADD COLUMN ${column} TEXT`);
         }
@@ -249,12 +313,13 @@ export class Store {
     const row = this.db.prepare(`
       SELECT guild_id AS guildId, log_channel_id AS logChannelId,
              welcome_channel_id AS welcomeChannelId, welcome_message AS welcomeMessage,
-             appeal_channel_id AS appealChannelId, subarea_category_id AS subareaCategoryId
+             appeal_channel_id AS appealChannelId, subarea_category_id AS subareaCategoryId,
+             subarea_forum_id AS subareaForumId
       FROM guild_settings WHERE guild_id = ?
     `).get(guildId) as unknown as GuildSettings | undefined;
     return row ?? {
       guildId, logChannelId: null, welcomeChannelId: null, welcomeMessage: DEFAULT_WELCOME_MESSAGE,
-      appealChannelId: null, subareaCategoryId: null,
+      appealChannelId: null, subareaCategoryId: null, subareaForumId: null,
     };
   }
 
@@ -267,23 +332,26 @@ export class Store {
       welcomeMessage: patch.welcomeMessage === undefined ? current.welcomeMessage : patch.welcomeMessage,
       appealChannelId: patch.appealChannelId === undefined ? current.appealChannelId : patch.appealChannelId,
       subareaCategoryId: patch.subareaCategoryId === undefined ? current.subareaCategoryId : patch.subareaCategoryId,
+      subareaForumId: patch.subareaForumId === undefined ? current.subareaForumId : patch.subareaForumId,
     };
     if (settings.logChannelId !== null) identifier(settings.logChannelId);
     if (settings.welcomeChannelId !== null) identifier(settings.welcomeChannelId);
     if (settings.appealChannelId !== null) identifier(settings.appealChannelId);
     if (settings.subareaCategoryId !== null) identifier(settings.subareaCategoryId);
+    if (settings.subareaForumId !== null) identifier(settings.subareaForumId);
     requiredText(settings.welcomeMessage, 'Welcome message', 2000);
     this.db.prepare(`
-      INSERT INTO guild_settings(guild_id, log_channel_id, welcome_channel_id, welcome_message, appeal_channel_id, subarea_category_id)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO guild_settings(guild_id, log_channel_id, welcome_channel_id, welcome_message, appeal_channel_id, subarea_category_id, subarea_forum_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(guild_id) DO UPDATE SET
         log_channel_id = excluded.log_channel_id,
         welcome_channel_id = excluded.welcome_channel_id,
         welcome_message = excluded.welcome_message,
         appeal_channel_id = excluded.appeal_channel_id,
-        subarea_category_id = excluded.subarea_category_id
+        subarea_category_id = excluded.subarea_category_id,
+        subarea_forum_id = excluded.subarea_forum_id
     `).run(guildId, settings.logChannelId, settings.welcomeChannelId, settings.welcomeMessage,
-      settings.appealChannelId, settings.subareaCategoryId);
+      settings.appealChannelId, settings.subareaCategoryId, settings.subareaForumId);
     return settings;
   }
 
@@ -314,6 +382,21 @@ export class Store {
     const row = this.db.prepare('SELECT count(*) AS count FROM warnings WHERE guild_id = ? AND user_id = ?')
       .get(guildId, userId) as { count: number };
     return row.count;
+  }
+
+  getWarning(guildId: string, warningId: number): Warning | null {
+    identifier(guildId);
+    positiveId(warningId);
+    return this.db.prepare(`SELECT ${warningColumns} FROM warnings WHERE guild_id = ? AND id = ?`)
+      .get(guildId, warningId) as unknown as Warning | undefined ?? null;
+  }
+
+  /** Remove only the live warning; immutable moderation cases retain the history. */
+  removeWarning(guildId: string, warningId: number): Warning | null {
+    identifier(guildId);
+    positiveId(warningId);
+    return this.db.prepare(`DELETE FROM warnings WHERE guild_id = ? AND id = ? RETURNING ${warningColumns}`)
+      .get(guildId, warningId) as unknown as Warning | undefined ?? null;
   }
 
   addCase(input: NewCase): ModerationCase {
@@ -512,9 +595,20 @@ export class Store {
     identifier(channelId);
     identifier(ownerId);
     const createdAt = new Date().toISOString();
-    return this.db.prepare(`INSERT INTO subareas(guild_id, channel_id, owner_id, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(guild_id, channel_id) DO UPDATE SET owner_id = excluded.owner_id RETURNING ${subareaColumns}`)
-      .get(guildId, channelId, ownerId, createdAt) as unknown as Subarea;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const previous = this.getSubarea(guildId, channelId);
+      const area = this.db.prepare(`INSERT INTO subareas(guild_id, channel_id, owner_id, created_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, channel_id) DO UPDATE SET owner_id = excluded.owner_id RETURNING ${subareaColumns}`)
+        .get(guildId, channelId, ownerId, createdAt) as unknown as Subarea;
+      // Delegates belong to their appointing owner, not future owners of the channel.
+      if (previous && previous.ownerId !== ownerId) this.clearSubareaDelegates(guildId, channelId);
+      this.db.exec('COMMIT');
+      return area;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   getSubarea(guildId: string, channelId: string): Subarea | null {
@@ -539,6 +633,84 @@ export class Store {
     identifier(guildId);
     identifier(channelId);
     this.db.prepare('DELETE FROM subareas WHERE guild_id = ? AND channel_id = ?').run(guildId, channelId);
+  }
+
+  setSubareaDelegate(guildId: string, channelId: string, userId: string, grantedBy: string): SubareaDelegate {
+    identifier(guildId);
+    identifier(channelId);
+    identifier(userId);
+    identifier(grantedBy);
+    const createdAt = new Date().toISOString();
+    return this.db.prepare(`INSERT INTO subarea_delegates(guild_id, channel_id, user_id, granted_by, created_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(guild_id, channel_id, user_id) DO UPDATE SET
+      granted_by = excluded.granted_by, created_at = excluded.created_at RETURNING ${delegateColumns}`)
+      .get(guildId, channelId, userId, grantedBy, createdAt) as unknown as SubareaDelegate;
+  }
+
+  getSubareaDelegate(guildId: string, channelId: string, userId: string): SubareaDelegate | null {
+    identifier(guildId);
+    identifier(channelId);
+    identifier(userId);
+    return this.db.prepare(`SELECT ${delegateColumns} FROM subarea_delegates
+      WHERE guild_id = ? AND channel_id = ? AND user_id = ?`)
+      .get(guildId, channelId, userId) as unknown as SubareaDelegate | undefined ?? null;
+  }
+
+  listSubareaDelegates(guildId: string, channelId: string): SubareaDelegate[] {
+    identifier(guildId);
+    identifier(channelId);
+    return this.db.prepare(`SELECT ${delegateColumns} FROM subarea_delegates
+      WHERE guild_id = ? AND channel_id = ? ORDER BY created_at, user_id`)
+      .all(guildId, channelId) as unknown as SubareaDelegate[];
+  }
+
+  deleteSubareaDelegate(guildId: string, channelId: string, userId: string): boolean {
+    identifier(guildId);
+    identifier(channelId);
+    identifier(userId);
+    return this.db.prepare('DELETE FROM subarea_delegates WHERE guild_id = ? AND channel_id = ? AND user_id = ?')
+      .run(guildId, channelId, userId).changes > 0;
+  }
+
+  clearSubareaDelegates(guildId: string, channelId: string): number {
+    identifier(guildId);
+    identifier(channelId);
+    return Number(this.db.prepare('DELETE FROM subarea_delegates WHERE guild_id = ? AND channel_id = ?')
+      .run(guildId, channelId).changes);
+  }
+
+  /** First write wins so re-locking cannot replace the original permission baseline. */
+  setSubareaLock(guildId: string, channelId: string, overwrites: string, lockedBy: string): SubareaLock {
+    identifier(guildId);
+    identifier(channelId);
+    identifier(lockedBy);
+    lockOverwrites(overwrites);
+    this.db.prepare(`INSERT INTO subarea_locks(guild_id, channel_id, overwrites, locked_by, created_at)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(guild_id, channel_id) DO NOTHING`)
+      .run(guildId, channelId, overwrites, lockedBy, new Date().toISOString());
+    return this.getSubareaLock(guildId, channelId)!;
+  }
+
+  getSubareaLock(guildId: string, channelId: string): SubareaLock | null {
+    identifier(guildId);
+    identifier(channelId);
+    return this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks WHERE guild_id = ? AND channel_id = ?`)
+      .get(guildId, channelId) as unknown as SubareaLock | undefined ?? null;
+  }
+
+  listSubareaLocks(guildId?: string): SubareaLock[] {
+    if (guildId !== undefined) identifier(guildId);
+    return (guildId === undefined
+      ? this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks ORDER BY guild_id, channel_id`).all()
+      : this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks WHERE guild_id = ? ORDER BY channel_id`).all(guildId)
+    ) as unknown as SubareaLock[];
+  }
+
+  deleteSubareaLock(guildId: string, channelId: string): boolean {
+    identifier(guildId);
+    identifier(channelId);
+    return this.db.prepare('DELETE FROM subarea_locks WHERE guild_id = ? AND channel_id = ?')
+      .run(guildId, channelId).changes > 0;
   }
 
   getSubareaRestriction(guildId: string, channelId: string, userId: string): SubareaRestriction | null {

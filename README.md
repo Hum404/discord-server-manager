@@ -1,6 +1,6 @@
 # Discord 伺服器管理機器人
 
-使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、獨立文字子區、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。使用 Slash Commands，不需要 Message Content Intent。
+使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。使用 Slash Commands，不需要 Message Content Intent。
 
 ## 環境需求
 
@@ -22,6 +22,9 @@
 
 ```sh
 npm ci
+```
+
+```sh
 cp .env.example .env
 ```
 
@@ -48,12 +51,14 @@ npm run invite
 | 權限 | 用途 |
 | --- | --- |
 | View Channels、Send Messages、Embed Links | 歡迎訊息與管理紀錄。 |
-| Read Message History、Manage Messages | 讀取及批次清理訊息。 |
+| Read Message History、Manage Messages、Pin Messages | 讀取、清理、置頂及取消置頂訊息。 |
 | Moderate Members | 設定與解除禁言。 |
 | Kick Members | 踢出成員。 |
 | Ban Members | 封鎖及解除封鎖。 |
 | Manage Channels、Manage Roles | 建立文字子區、設定與還原頻道內的成員權限。 |
 | Mention Everyone | 讓子區建立者透過 Bot 發送身分組及 everyone／here 通知。 |
+| Manage Threads、Send Messages in Threads、Create Public Threads、Create Private Threads | 建立及管理討論串與論壇帖子、鎖定／封存及移除討論串成員。 |
+| Add Reactions | 子區互動所需的反應權限。 |
 
 在 **伺服器設定 → 身分組** 中，將機器人的身分組放在它需要管理的成員身分組上方。頻道覆寫權限也必須允許機器人檢視頻道及執行對應操作。
 
@@ -71,6 +76,9 @@ npm run dev
 
 ```sh
 npm run build
+```
+
+```sh
 npm start
 ```
 
@@ -118,7 +126,7 @@ npm run commands:sync
 | `/config welcome [channel]` | 設定歡迎頻道；省略頻道則停用。 | Manage Server |
 | `/config welcome-message message` | 設定歡迎訊息範本，最多 1,000 字元。 | Manage Server |
 | `/config appeals [channel]` | 設定私人申訴通知頻道；省略則停用頻道通知。 | Manage Server |
-| `/config subareas [category]` | 開放在指定分類建立子區；省略則停用新建。 | Manage Server |
+| `/config subareas [category] [forum]` | 設定開放建立子區的分類／論壇；兩者皆省略則停用新建。 | Manage Server |
 | `/access grant user scope` | 授予指定或全部 Bot 管理功能。 | 伺服器擁有者或原生 Administrator |
 | `/access revoke user [scope]` | 撤回指定授權；省略則撤回全部。 | 伺服器擁有者或原生 Administrator |
 | `/access list [user]` | 查看本伺服器的管理授權。 | 伺服器擁有者或原生 Administrator |
@@ -126,16 +134,29 @@ npm run commands:sync
 | `/appeal status [id]` | 查詢自己的申訴工單。 | 工單申訴人 |
 | `/appeal queue [id] [status]` | 查看工單清單或指定工單完整內容。 | 原生 Manage Server 或伺服器擁有者 |
 | `/appeal review id result reason` | 通過或駁回申訴並記錄處理說明。 | 原生 Manage Server 或伺服器擁有者 |
-| `/subarea create name` | 在已開放的分類建立自己的獨立文字頻道。 | 可查看該分類的成員，每人最多 3 個 |
-| `/subarea assign channel user` | 登記既有文字頻道或轉移子區建立者。 | 伺服器擁有者或原生 Administrator |
+| `/subarea create name [type] [parent] [content]` | 建立獨立文字頻道、討論串或論壇帖子；預設文字頻道。 | 可查看並在開放目的地建立的成員，已登記子區少於 3 個才可再建立 |
+| `/subarea assign channel user` | 登記文字頻道／討論串；原生用戶建立的討論串保留原帖主。 | 伺服器擁有者或原生 Administrator |
 | `/subarea list` | 查看自己建立的子區。 | 一般成員 |
-| `/subarea mute user reason` | 禁止成員在目前子區發言、開討論串及新增反應。 | 該子區建立者或原生 Administrator |
-| `/subarea unmute user [reason]` | 解除目前子區的禁言。 | 該子區建立者或原生 Administrator |
-| `/subarea kick user reason` | 確認後禁止成員查看及進入目前子區。 | 該子區建立者或原生 Administrator |
-| `/subarea unkick user [reason]` | 恢復目前子區的存取。 | 該子區建立者或原生 Administrator |
-| `/subarea tag user [message]` | 透過 Bot 標註指定用戶。 | 僅目前子區建立者 |
-| `/subarea role-tag role [message]` | 透過 Bot 標註指定身分組。 | 僅目前子區建立者 |
+| `/subarea mute user reason` | 在目前子區禁言；文字頻道覆寫權限，討論串監聽後刪訊息及反應。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea unmute user [reason]` | 解除目前子區的禁言。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea kick user reason` | 文字子區禁止查看；討論串僅移除成員，公開討論串仍可重新加入。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea unkick user [reason]` | 恢復文字子區存取或將成員重新加入討論串。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea tag user [message]` | 透過 Bot 提及指定用戶。 | 僅目前子區建立者 |
+| `/subarea role-tag role [message]` | 透過 Bot 提及指定身分組。 | 僅目前子區建立者 |
 | `/subarea announce audience message` | 在子區通知 `everyone` 或 `here`。 | 僅目前子區建立者 |
+| `/subarea pin message` | 標註（置頂）目前子區的指定訊息。 | 僅目前子區建立者 |
+| `/subarea unpin message` | 取消標註（置頂）。 | 僅目前子區建立者 |
+| `/subarea delete-message message` | 刪除目前子區的指定訊息。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea slowmode seconds` | 設定 0 至 21,600 秒慢速模式，0 為關閉。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea rename name` | 修改目前子區名稱。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea lock`、`/subarea unlock` | 鎖定／解鎖；討論串鎖定會一併封存。 | 該子區建立者、協管或原生 Administrator |
+| `/subarea delete` | 經兩次確認後刪除自己的子區。 | 僅目前子區建立者 |
+| `/subarea delegate user`、`/subarea undelegate user` | 授予／撤回目前子區協管。 | 該子區建立者或原生 Administrator |
+| `/subarea delegates`、`/subarea info` | 查看協管及子區管理資訊。 | 該子區建立者、協管或原生 Administrator |
+| `/admin cases [user]`、`/admin case id` | 查看本伺服器近期案件或指定案件完整紀錄。 | 原生 Manage Server |
+| `/admin warning-remove id reason` | 確認後移除警告，保存原案件及移除紀錄。 | 原生 Manage Server |
+| `/admin role-add user role reason`、`/admin role-remove user role reason` | 新增／移除成員身分組。 | 原生 Manage Server 與 Manage Roles |
+| `/admin channel-edit channel reason [name] [slowmode] [nsfw]` | 編輯文字／公告頻道名稱、慢速模式或年齡限制。 | 原生 Manage Server 與 Manage Channels |
 
 踢出、封鎖與清理訊息會先顯示僅操作者可見的確認按鈕，30 秒後失效。執行時仍會重新檢查權限。無法管理伺服器擁有者、自己或機器人本身，也不能對同級或較高角色成員執行受限制的操作；伺服器擁有者執行的 Discord 管理操作仍受機器人角色階級限制。本機警告紀錄不需要機器人修改目標角色。Discord 不允許對管理員或機器人成員設定禁言。
 
@@ -185,41 +206,168 @@ Bot 授權不包含再次授權別人、修改伺服器設定或審核申訴。�
 
 審核結果會保存並嘗試私訊通知當事人。**通過申訴不會自動撤銷原處罰**；管理員需另行解除禁言、封鎖或子區限制，已踢出成員需重新加入。單靠 Bot 管理授權不能查看或審核工單。
 
-### 獨立文字子區
+### 子區管理：文字頻道、討論串與論壇帖子
 
-子區是獨立文字頻道，由 Bot 保存建立者身分。先建立分類並開放用戶建立：
+保留既有獨立文字子區，並支援 Discord 討論串及論壇帖子。先由管理員開放建立範圍；可同時設定分類與論壇，或只提供其中一項。兩者都不提供會停用新建，既有子區仍可管理：
 
 ```text
-/config subareas category:社群子區
+/config subareas category:社群子區 forum:#交流論壇
+```
+
+預設建立獨立文字頻道；討論串需指定已開放分類內的文字母頻道，論壇帖子需使用已開放論壇或開放分類內的論壇：
+
+```text
 /subarea create name:小明的討論區
 ```
 
-只有可查看該分類的用戶可以建立，每人每個伺服器最多保留 3 個。新子區繼承分類的可見範圍，建立者透過 Bot 管理子區，不會因此取得伺服器的 Manage Channels 或 Manage Roles。管理員可登記既有頻道或更換建立者：
+```text
+/subarea create name:活動討論 type:thread parent:#活動大廳
+```
+
+```text
+/subarea create name:作品交流 type:forum parent:#交流論壇 content:歡迎交流作品。
+```
+
+建立者須能查看目的地並具備對應的 Discord 建立權限；同一用戶在該伺服器已有 3 個已登記子區時，Bot 不再替其建立新子區。新文字子區繼承分類的可見範圍，Bot 不會把伺服器的 Manage Channels 或 Manage Roles 授予建立者。用戶自己建立的既有討論串／論壇帖子可在帖內使用管理指令，Bot 會記錄原生帖主；Bot 建立的討論串則以本機保存的建立者為準。
+
+管理員可登記既有文字頻道，或指派 Bot 建立子區的新管理者；用戶原生建立的討論串須維持 Discord 原帖主，不能藉登記冒充其他用戶的帖子：
 
 ```text
 /subarea assign channel:#小明的討論區 user:@小明
 ```
 
-在子區內執行下列指令，只會修改目前子區的成員權限：
+#### 協管與日常操作
+
+建立者或原生 Administrator 可授予目前子區的協管。協管可禁言、移除成員、刪訊息、改名、調整慢速模式及鎖定／解鎖，但不能再授權協管、刪除整個子區、置頂訊息或代替建立者發送提及。更換子區建立者會撤回舊協管；其他子區不受影響。
+
+```text
+/subarea delegate user:@協管
+```
+
+```text
+/subarea delegates
+```
+
+```text
+/subarea undelegate user:@協管
+```
+
+「標註」明確指訊息置頂，與 `tag` 的 @ 提及分開。`message` 接受目前子區的 Discord 訊息連結或訊息 ID；其他頻道的訊息不能透過此子區管理：
+
+```text
+/subarea pin message:訊息連結或ID
+```
+
+```text
+/subarea unpin message:訊息連結或ID
+```
+
+```text
+/subarea delete-message message:訊息連結或ID
+```
+
+```text
+/subarea slowmode seconds:10
+```
+
+```text
+/subarea rename name:新的子區名稱
+```
+
+```text
+/subarea lock
+```
+
+```text
+/subarea unlock
+```
+
+文字頻道鎖定會保存原有權限，禁止一般成員發言，並保留 Bot／目前建立者的管理能力。解鎖時還原受管理的權限項目，保留其他權限變動和仍有效的個別成員限制；原生 Administrator 依 Discord 規則可繞過頻道限制。討論串鎖定採用 Discord 的鎖定及封存，解鎖會解除封存。建立者使用 `/subarea delete` 須完成兩次限時確認，刪除無法還原。
+
+私密討論串會另外確認操作者仍是該討論串的成員；只具備父頻道的查看權限不足以使用子區管理功能。原生具有該頻道 Manage Threads 權限的管理人員依 Discord 規則可存取私密討論串。文字子區鎖定時請先解鎖，再轉移建立者。
+
+#### 子區禁言與移除成員
 
 ```text
 /subarea mute user:@用戶 reason:持續洗版
+```
+
+```text
 /subarea kick user:@用戶 reason:違反本子區規則
+```
+
+```text
 /subarea unmute user:@用戶
+```
+
+```text
 /subarea unkick user:@用戶
 ```
 
-子區禁言會限制發言、討論串發言與建立、以及新增反應；子區踢出會禁止查看及進入，不會將成員踢出整個伺服器。兩種限制可同時存在，解除其中一種會保留另一種；解除時還原 Bot 管理的權限項目，保留其他權限設定。原生 Administrator 依 Discord 規則可繞過頻道限制，Bot 不允許子區建立者限制管理員、伺服器管理者、自己或機器人。
+兩種子區依 Discord 提供的能力採不同機制：
 
-Bot 的標註指令僅限目前建立者，管理員也不能藉此替其他人的子區發送標註；每個子區每 30 秒可使用一次：
+| 子區類型 | 禁言 | 移除成員 |
+| --- | --- | --- |
+| 獨立文字頻道 | 頻道覆寫禁止發言、討論串發言與建立、以及新增反應；Bot 離線仍有效。 | 禁止查看及進入該頻道，不踢出伺服器。 |
+| 討論串／論壇帖子 | Bot 收到消息或新增反應事件後刪除；Bot 必須在線，訊息可能短暫出現。 | 從討論串成員名單移除；公開討論串仍可能查看及重新加入，不代表永久封鎖。 |
+
+子區操作不會自動升級為全伺服器禁言或封鎖。文字頻道的禁言與禁止進入可同時存在，解除其中一種保留另一種，並還原 Bot 管理的權限項目。Bot 不允許子區管理者限制伺服器管理員、建立者、自己或機器人。
+
+#### 建立者提及通知
+
+以下 @ 提及指令僅限目前建立者，管理員和協管亦不能代替其他人的子區發送；每個子區每 30 秒可使用一次：
 
 ```text
 /subarea tag user:@用戶 message:請查看本區規則
+```
+
+```text
 /subarea role-tag role:@活動成員 message:活動即將開始
+```
+
+```text
 /subarea announce audience:everyone message:本區公告
 ```
 
-新建子區會把 Mention Everyone 權限保留給建立者及 Bot。這不會禁止 Discord 本身允許的個別用戶提及，或提及已設定為可標註的身分組；原生 Administrator 亦可繞過頻道覆寫。Bot 提供的三種標註指令仍嚴格檢查建立者身分。
+新建文字子區會把 Mention Everyone 權限保留給建立者及 Bot。這不會禁止 Discord 本身允許的個別用戶提及，或提及已設定為可提及的身分組；原生 Administrator 亦可繞過頻道覆寫。討論串沿用母頻道的原生權限，Bot 提供的三種指令仍嚴格檢查建立者身分。
+
+### 管理員工具
+
+`/admin` 僅限具備原生 Manage Server 的用戶；單靠 `/access` Bot 管理授權不能使用。身分組及頻道操作還會檢查對應的原生管理權限、操作者與 Bot 的角色階級，以及目標頻道的查看權限。
+
+```text
+/admin cases
+```
+
+```text
+/admin cases user:@用戶
+```
+
+```text
+/admin case id:1
+```
+
+```text
+/admin warning-remove id:1 reason:已確認誤判
+```
+
+`warning-remove` 的 `id` 是 `/warnings` 顯示的警告編號，與管理案件編號不同。確認後移除有效警告，不刪除原始管理案件；移除操作另留紀錄。
+
+```text
+/admin role-add user:@用戶 role:@活動成員 reason:參加活動
+```
+
+```text
+/admin role-remove user:@用戶 role:@活動成員 reason:活動結束
+```
+
+不能操作 `@everyone`、Discord 託管身分組、自己、Bot、伺服器擁有者或受保護管理員，目標成員與身分組均須低於操作者及 Bot 的可管理階級。一般伺服器管理者不能透過此功能發放或移除帶有高危管理權限的身分組；原生 Administrator 仍受角色階級和 Bot 權限限制。
+
+```text
+/admin channel-edit channel:#活動大廳 reason:活動開始 slowmode:10 name:活動交流
+```
+
+頻道編輯限文字／公告頻道，可修改名稱及 `nsfw`；慢速模式僅限文字頻道，公告頻道不接受此選項。至少指定一個變更項目；保留其他頻道設定與權限覆寫。每次變更都記錄原因，等待確認或讀取目標後會重新檢查權限。
 
 ### 歡迎訊息
 
@@ -238,7 +386,7 @@ Bot 的標註指令僅限目前建立者，管理員也不能藉此替其他人�
 
 ### 資料與紀錄
 
-設定、警告、管理授權、申訴工單、子區建立者與限制狀態都保存在 SQLite，重新啟動後仍會保留，各伺服器資料分開查詢。首次啟動新版時會自動新增資料表及設定欄位，保留舊的警告、案件與設定。子區權限同時保存在 Discord 頻道覆寫中，不依賴 Bot 持續在線才生效。
+設定、警告、管理授權、申訴工單、子區建立者、協管、文字頻道鎖定快照與限制狀態都保存在 SQLite，重新啟動後仍會保留，各伺服器資料分開查詢。首次啟動新版時會自動新增資料表及設定欄位，保留舊的警告、案件與設定。文字子區限制同時保存在 Discord 頻道覆寫中，不依賴 Bot 持續在線才生效；討論串禁言依賴 Bot 在線接收事件。
 
 管理紀錄頻道是額外通知；頻道被刪除或失去發送權限時，通知失敗不代表已成功的管理操作會撤回。也可透過 Discord 原生稽核紀錄查看 Discord 支援的管理操作。
 
@@ -272,16 +420,16 @@ sudo -u discordbot -H git -C /opt/discord-manager pull --ff-only
 sudo -u discordbot -H npm --prefix /opt/discord-manager run build
 ```
 
-啟動並自動註冊新版指令：
-
-```sh
-sudo systemctl restart discord-manager
-```
-
-產生新的邀請網址，開啟網址對原伺服器重新授權，補上子區所需的 Manage Channels、Manage Roles、Mention Everyone：
+產生新的邀請網址，開啟網址對原伺服器重新授權，補上子區所需的 Manage Channels、Manage Roles、Manage Threads、Pin Messages 與討論串發言／建立等權限：
 
 ```sh
 sudo -u discordbot -H npm --prefix /opt/discord-manager run invite
+```
+
+啟動並自動註冊新版指令：
+
+```sh
+sudo systemctl start discord-manager
 ```
 
 檢查啟動結果：
@@ -290,14 +438,14 @@ sudo -u discordbot -H npm --prefix /opt/discord-manager run invite
 sudo journalctl -u discord-manager -n 50 --no-pager
 ```
 
-最後在 Discord 設定私人申訴頻道與子區分類，再依需要授權用戶：
+最後在 Discord 設定私人申訴頻道、子區分類及論壇，再依需要授權用戶：
 
 ```text
 /config appeals channel:#申訴審核
 ```
 
 ```text
-/config subareas category:社群子區
+/config subareas category:社群子區 forum:#交流論壇
 ```
 
 ```text
@@ -308,7 +456,13 @@ sudo journalctl -u discord-manager -n 50 --no-pager
 
 ```sh
 npm run check
+```
+
+```sh
 npm test
+```
+
+```sh
 npm run build
 ```
 
@@ -320,7 +474,9 @@ npm run build
 - **Missing Permissions 或無法管理某位成員：** 檢查機器人及操作者的功能權限、頻道覆寫權限，以及雙方的最高角色位置。
 - **授權後看不到管理指令：** 查看伺服器設定中的應用程式整合與指令使用權限。Bot 授權不會移除 Discord 另外設定的指令禁止規則。
 - **申訴沒有出現在頻道：** 用 `/appeal queue` 確認工單是否已保存，並檢查 `/config appeals`、頻道私人設定及 Bot 的發送／嵌入連結權限。
-- **子區無法建立或限制成員：** 重新使用新版邀請網址授權 Manage Channels、Manage Roles、Mention Everyone，確認已設定 `/config subareas`，並檢查分類覆寫與 Bot 角色位置。
+- **子區無法建立或限制成員：** 重新使用新版邀請網址授權子區、討論串及置頂權限，確認已設定 `/config subareas`，並檢查母頻道／分類覆寫與 Bot 角色位置。
+- **討論串移除後仍可加入：** 公開討論串移除成員只會移出成員名單，無法原生禁止查看或重新加入；需永久隔離時使用獨立文字子區的存取限制。
+- **討論串禁言沒有刪訊息：** 確認 Bot 在線、有 Manage Messages 與查看／歷史權限，且目前討論串已登記；此機制不會在 Discord 原生輸入框禁止發言。
 - **歡迎訊息沒有出現：** 確認已設定歡迎頻道、開啟 Server Members Intent，且機器人能在該頻道發送訊息。
 - **Disallowed Intents：** 在 Developer Portal 開啟 Server Members Intent，再重新啟動。需要審核的 Application 必須先取得 Discord 核准。
 - **重新部署後資料消失：** 確認 `DATABASE_PATH` 指向持久磁碟，而非部署時會清空的暫存目錄。

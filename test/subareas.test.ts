@@ -61,6 +61,7 @@ function fixture(store: Store, action: string, registered = true) {
     const cache = new Collection<string, Overwrite>();
     return {
       id, guildId: ids.guild, type,
+      isThread: () => false,
       permissionsFor(subject: { id: string; permissions: PermissionsBitField }) {
         const result = new PermissionsBitField(subject.permissions.bitfield);
         for (const overwrite of [cache.get(ids.guild), cache.get(subject.id)]) {
@@ -142,7 +143,7 @@ function fixture(store: Store, action: string, registered = true) {
     options: {
       getSubcommand: () => state.action,
       getUser: () => target.user,
-      getString: (name: string) => name === 'name' ? '我的子區' : name === 'reason' ? '請遵守子區規則' : name === 'audience' ? 'everyone' : state.message,
+      getString: (name: string) => name === 'type' ? null : name === 'name' ? '我的子區' : name === 'reason' ? '請遵守子區規則' : name === 'audience' ? 'everyone' : state.message,
       getRole: () => ({ id: ids.role }),
       getChannel: () => channel,
     },
@@ -405,5 +406,94 @@ test('reconciliation completes a saved removal after a crash and clears its dura
     await reconcileSubareaRestrictions(client, store);
     assert.equal(f.channel.permissionOverwrites.cache.has(ids.target), false);
     assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target), null);
+  } finally { store.close(); }
+});
+
+test('local delegates can moderate within their assigned area but cannot pin, notify or re-delegate', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture(store, 'mute');
+    store.setSubarea(ids.guild, ids.channel, ids.other);
+    store.setSubareaDelegate(ids.guild, ids.channel, ids.actor, ids.other);
+    f.target.roles.highest.position = 10;
+    await f.run();
+    assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target)?.muted, true);
+    for (const action of ['pin', 'unpin', 'tag', 'role-tag', 'announce', 'delegate', 'delete']) {
+      f.state.action = action;
+      await assert.rejects(f.run(), /只有/);
+    }
+    assert.equal(f.sent.length, 0);
+    assert.equal(f.counters.kicks, 0);
+    assert.equal(f.counters.timeouts, 0);
+  } finally { store.close(); }
+});
+
+test('revoking a local delegate during a punishment notice prevents text-channel restriction', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture(store, 'mute');
+    store.setSubarea(ids.guild, ids.channel, ids.other);
+    store.setSubareaDelegate(ids.guild, ids.channel, ids.actor, ids.other);
+    f.state.onNotification = () => { store.deleteSubareaDelegate(ids.guild, ids.channel, ids.actor); };
+    await assert.rejects(f.run(), /只有/);
+    assert.equal(f.counters.edits, 0);
+    assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target), null);
+  } finally { store.close(); }
+});
+
+test('lock then mute and unmute retains the lock until unlock and restores an absent member overwrite', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture(store, 'lock');
+    await f.run();
+    assert.ok(store.getSubareaLock(ids.guild, ids.channel));
+    f.state.action = 'mute';
+    await f.run();
+    f.state.action = 'unmute';
+    await f.run();
+    assert.equal(f.channel.permissionOverwrites.cache.get(ids.target)!.deny.bitfield & MUTE_PERMISSION_BITS, MUTE_PERMISSION_BITS);
+    assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target)?.muted, false);
+    f.state.action = 'unlock';
+    await f.run();
+    assert.equal(store.getSubareaLock(ids.guild, ids.channel), null);
+    assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target), null);
+    assert.equal(f.channel.permissionOverwrites.cache.has(ids.target), false);
+  } finally { store.close(); }
+});
+
+test('a mute cleared while locked is not resurrected when the text area unlocks', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture(store, 'mute');
+    await f.run();
+    f.state.action = 'lock';
+    await f.run();
+    f.state.action = 'unmute';
+    await f.run();
+    f.state.action = 'unlock';
+    await f.run();
+    assert.equal(f.channel.permissionOverwrites.cache.has(ids.target), false);
+    assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target), null);
+  } finally { store.close(); }
+});
+
+test('unlock retains an active local mute and kick until each is separately reversed', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture(store, 'lock');
+    await f.run();
+    f.state.action = 'mute';
+    await f.run();
+    f.state.action = 'kick';
+    await f.run();
+    f.state.action = 'unlock';
+    await f.run();
+    assert.equal(f.channel.permissionOverwrites.cache.get(ids.target)?.deny.bitfield, MANAGED_PERMISSION_BITS);
+    f.state.action = 'unmute';
+    await f.run();
+    assert.equal(f.channel.permissionOverwrites.cache.get(ids.target)?.deny.bitfield, KICK_PERMISSION_BITS);
+    f.state.action = 'unkick';
+    await f.run();
+    assert.equal(f.channel.permissionOverwrites.cache.has(ids.target), false);
   } finally { store.close(); }
 });

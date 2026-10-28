@@ -1,9 +1,11 @@
-import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials } from 'discord.js';
 import { ConfigError, loadConfig } from './config.js';
 import { handleInteraction, logFailure, welcomeMember } from './bot.js';
 import { Store } from './store.js';
 import { registerCommands, registerDmAppeal, resolveApplication } from './application.js';
 import { handleSubareaChannelDelete, reconcileSubareaRestrictions } from './subareas.js';
+import { reconcileSubareaLocks } from './subarea-tools.js';
+import { handleSubareaThreadMessage, handleSubareaThreadReaction } from './subarea-threads.js';
 
 let client: Client | undefined;
 let store: Store | undefined;
@@ -36,13 +38,18 @@ try {
   store = new Store(config.databasePath);
   const database = store;
   client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMessageReactions],
+    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
     allowedMentions: { parse: [], repliedUser: false },
   });
   client.once(Events.ClientReady, (ready) => {
     console.log(`已登入 ${ready.user.tag}，目前服務 ${ready.guilds.cache.size} 個伺服器。`);
     console.log('指令已自動註冊，使用 /help 查看說明。');
-    if (!stopping) track(reconcileSubareaRestrictions(ready, database));
+    if (!stopping) track((async () => {
+      await reconcileSubareaLocks(ready, database);
+      if (!stopping) await reconcileSubareaRestrictions(ready, database);
+    })());
   });
   client.on(Events.InteractionCreate, (interaction) => {
     if (!stopping) track(handleInteraction(interaction, database));
@@ -50,10 +57,22 @@ try {
   client.on(Events.GuildMemberAdd, (member) => {
     if (!stopping) track(welcomeMember(member, database));
   });
+  client.on(Events.MessageCreate, (message) => {
+    if (!stopping) track(handleSubareaThreadMessage(message, database));
+  });
+  client.on(Events.MessageReactionAdd, (reaction, user) => {
+    if (!stopping) track(handleSubareaThreadReaction(reaction, user, database));
+  });
   client.on(Events.ChannelDelete, (channel) => {
     if (!stopping && 'guild' in channel) {
       try { handleSubareaChannelDelete(channel, database); }
       catch (error) { logFailure('子區資料清理失敗', error); }
+    }
+  });
+  client.on(Events.ThreadDelete, (thread) => {
+    if (!stopping) {
+      try { handleSubareaChannelDelete(thread, database); }
+      catch (error) { logFailure('討論串子區資料清理失敗', error); }
     }
   });
   client.on(Events.Error, (error) => logFailure('Discord 連線錯誤', error));

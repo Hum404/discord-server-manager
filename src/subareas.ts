@@ -10,6 +10,11 @@ import { UserError, logFailure } from './errors.js';
 import { requireBotPermissions } from './permissions.js';
 import { truncate } from './presentation.js';
 import { Store, type Subarea, type SubareaRestriction } from './store.js';
+import {
+  handleSubareaTools, lockAwareRestrictionBaseline, managedAreaOperation,
+  overlaySubareaLock,
+} from './subarea-tools.js';
+import { createThreadSubarea, ensureThreadArea, handleThreadSubarea } from './subarea-threads.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = { actor: GuildMember; bot: GuildMember; channel: GuildBasedChannel | null };
@@ -23,7 +28,6 @@ export const MUTE_PERMISSION_BITS = PermissionFlagsBits.SendMessages | Permissio
   | PermissionFlagsBits.CreatePublicThreads | PermissionFlagsBits.CreatePrivateThreads | PermissionFlagsBits.AddReactions;
 export const KICK_PERMISSION_BITS = PermissionFlagsBits.ViewChannel;
 export const MANAGED_PERMISSION_BITS = MUTE_PERMISSION_BITS | KICK_PERMISSION_BITS;
-const locks = new Map<string, Promise<void>>();
 const lastTags = new Map<string, number>();
 
 /** Restore our managed bits from the baseline, preserving all other current bits. */
@@ -43,19 +47,7 @@ export function computeRestrictionPermissions(
   };
 }
 
-async function exclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const previous = locks.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => { release = resolve; });
-  locks.set(key, current);
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (locks.get(key) === current) locks.delete(key);
-  }
-}
+const exclusive = managedAreaOperation;
 
 function isAdministrator(member: GuildMember): boolean {
   return member.id === member.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator);
@@ -83,8 +75,9 @@ function currentArea(command: Command, store: Store, current: Context, creatorOn
   }
   const area = store.getSubarea(command.guildId, current.channel.id);
   if (!area) throw new UserError('目前頻道不是已登記的子區。');
-  if (area.ownerId !== current.actor.id && (creatorOnly || !isAdministrator(current.actor))) {
-    throw new UserError(creatorOnly ? '只有目前子區的建立者可以使用標註功能。' : '只有此子區建立者或伺服器管理員可以執行此操作。');
+  const delegated = !creatorOnly && store.getSubareaDelegate(command.guildId, current.channel.id, current.actor.id) !== null;
+  if (area.ownerId !== current.actor.id && !delegated && (creatorOnly || !isAdministrator(current.actor))) {
+    throw new UserError(creatorOnly ? '只有目前子區的建立者可以使用提及通知功能。' : '只有此子區建立者或伺服器管理員可以執行此操作。');
   }
   if (!current.channel.permissionsFor(current.actor).has(PermissionFlagsBits.ViewChannel)) {
     throw new UserError('你目前無法查看此子區。');
@@ -92,7 +85,7 @@ function currentArea(command: Command, store: Store, current: Context, creatorOn
   return { area, channel: current.channel };
 }
 
-async function targetMember(command: Command, current: Context, area: Subarea): Promise<GuildMember> {
+async function targetMember(command: Command, current: Context, area: Subarea, store: Store): Promise<GuildMember> {
   const selected = command.options.getUser('user', true);
   const target = await command.guild.members.fetch({ user: selected.id, force: true });
   if (target.id === current.actor.id || target.id === area.ownerId || target.id === current.bot.id
@@ -103,7 +96,8 @@ async function targetMember(command: Command, current: Context, area: Subarea): 
   if (target.roles.highest.position >= current.bot.roles.highest.position) {
     throw new UserError('機器人的最高角色必須高於目標成員。');
   }
-  if (area.ownerId !== current.actor.id && current.actor.id !== command.guild.ownerId
+  if (area.ownerId !== current.actor.id && !store.getSubareaDelegate(command.guildId, area.channelId, current.actor.id)
+    && current.actor.id !== command.guild.ownerId
     && target.roles.highest.position >= current.actor.roles.highest.position) {
     throw new UserError('你的最高角色必須高於目標成員。');
   }
@@ -125,14 +119,15 @@ function permissionPatch(allow: bigint, deny: bigint): PermissionOverwriteOption
   return patch;
 }
 
-async function writeRestrictionPermissions(channel: TextChannel, state: SubareaRestriction, auditReason: string): Promise<void> {
+async function writeRestrictionPermissions(channel: TextChannel, store: Store, state: SubareaRestriction, auditReason: string): Promise<void> {
   const existing = channel.permissionOverwrites.cache.get(state.userId);
   const permissions = computeRestrictionPermissions(existing?.allow.bitfield ?? 0n, existing?.deny.bitfield ?? 0n,
     state.originalAllow, state.originalDeny, state.muted, state.kicked);
-  if (permissions.removeOverwrite) {
+  const overlay = overlaySubareaLock(store, state.guildId, state.channelId, state.userId, permissions.allow, permissions.deny);
+  if (permissions.removeOverwrite && !store.getSubareaLock(state.guildId, state.channelId)) {
     if (existing) await channel.permissionOverwrites.delete(state.userId, auditReason);
   } else {
-    await channel.permissionOverwrites.edit(state.userId, permissionPatch(permissions.allow, permissions.deny), {
+    await channel.permissionOverwrites.edit(state.userId, permissionPatch(overlay.allow, overlay.deny), {
       type: OverwriteType.Member, reason: auditReason,
     });
   }
@@ -144,16 +139,18 @@ async function applyRestriction(
 ): Promise<string> {
   const previous = store.getSubareaRestriction(command.guildId, channel.id, target.id);
   const original = channel.permissionOverwrites.cache.get(target.id);
+  const baseline = lockAwareRestrictionBaseline(store, command.guildId, channel.id, target.id,
+    original ? { allow: original.allow.bitfield, deny: original.deny.bitfield } : null);
   const muted = action === 'mute' ? true : action === 'unmute' ? false : previous?.muted ?? false;
   const kicked = action === 'kick' ? true : action === 'unkick' ? false : previous?.kicked ?? false;
   const state = store.setSubareaRestriction({
     guildId: command.guildId, channelId: channel.id, userId: target.id, muted, kicked,
-    originalAllow: previous ? previous.originalAllow : (original ? original.allow.bitfield.toString() : null),
-    originalDeny: previous ? previous.originalDeny : (original ? original.deny.bitfield.toString() : null),
+    originalAllow: previous ? previous.originalAllow : baseline.originalAllow,
+    originalDeny: previous ? previous.originalDeny : baseline.originalDeny,
     moderatorId: command.user.id, reason: explanation,
   });
   try {
-    await writeRestrictionPermissions(channel, state, truncate(`${command.user.id}：${explanation}`, 512));
+    await writeRestrictionPermissions(channel, store, state, truncate(`${command.user.id}：${explanation}`, 512));
   } catch (error) {
     try {
       if (previous) store.setSubareaRestriction(previous);
@@ -163,7 +160,7 @@ async function applyRestriction(
     }
     throw error;
   }
-  if (!muted && !kicked) {
+  if (!muted && !kicked && !store.getSubareaLock(command.guildId, channel.id)) {
     try { store.deleteSubareaRestriction(command.guildId, channel.id, target.id); }
     catch (error) {
       logFailure('子區限制已解除但本機紀錄清理失敗', error);
@@ -229,7 +226,7 @@ async function pruneDeletedAreas(command: Command, store: Store): Promise<Subare
   for (const area of store.listSubareas(command.guildId, command.user.id)) {
     try {
       const channel = await command.guild.channels.fetch(area.channelId, { force: true });
-      if (!channel || channel.type !== ChannelType.GuildText) store.deleteSubarea(area.guildId, area.channelId);
+      if (!channel || (channel.type !== ChannelType.GuildText && !channel.isThread())) store.deleteSubarea(area.guildId, area.channelId);
       else found.push(area);
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 10003) {
@@ -291,6 +288,9 @@ async function assignArea(command: Command, store: Store): Promise<void> {
     if (!channel || channel.type !== ChannelType.GuildText || channel.guildId !== command.guildId) {
       throw new UserError('只能指派本伺服器的文字頻道。');
     }
+    if (store.getSubareaLock(command.guildId, channel.id)) {
+      throw new UserError('此子區正在鎖定，請先 /subarea unlock 再轉移建立者。');
+    }
     assertBot(current.bot, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
       PermissionFlagsBits.ManageRoles, PermissionFlagsBits.MentionEveryone]);
     const owner = await command.guild.members.fetch({ user: command.options.getUser('user', true).id, force: true });
@@ -298,11 +298,12 @@ async function assignArea(command: Command, store: Store): Promise<void> {
     const verified = await context(command);
     if (!isAdministrator(verified.actor)) throw new UserError('你的管理員權限已變更，未指派子區建立者。');
     const previousArea = store.getSubarea(command.guildId, channel.id);
+    const previousDelegates = previousArea ? store.listSubareaDelegates(command.guildId, channel.id) : [];
     const previousRestriction = store.getSubareaRestriction(command.guildId, channel.id, owner.id);
     const previousOverwrites = channel.permissionOverwrites.cache.map((overwrite) => ({ id: overwrite.id,
       type: overwrite.type, allow: overwrite.allow.bitfield, deny: overwrite.deny.bitfield }));
     try {
-      if (previousRestriction) await writeRestrictionPermissions(channel, { ...previousRestriction, muted: false, kicked: false }, '指派新建立者，解除其舊子區限制');
+      if (previousRestriction) await writeRestrictionPermissions(channel, store, { ...previousRestriction, muted: false, kicked: false }, '指派新建立者，解除其舊子區限制');
       // Fetch again because overwrite editing uses REST and need not update its cache.
       const refreshed = await command.guild.channels.fetch(channel.id, { force: true });
       if (!refreshed || refreshed.type !== ChannelType.GuildText) throw new UserError('子區已不存在。');
@@ -321,6 +322,9 @@ async function assignArea(command: Command, store: Store): Promise<void> {
       try {
         if (previousArea) store.setSubarea(command.guildId, channel.id, previousArea.ownerId);
         else store.deleteSubarea(command.guildId, channel.id);
+        if (previousArea) for (const delegate of previousDelegates) {
+          store.setSubareaDelegate(delegate.guildId, delegate.channelId, delegate.userId, delegate.grantedBy);
+        }
         if (previousRestriction) store.setSubareaRestriction(previousRestriction);
       } catch (rollbackError) { logFailure('子區建立者指派資料回復失敗', rollbackError); }
       throw error;
@@ -333,7 +337,7 @@ async function assignArea(command: Command, store: Store): Promise<void> {
 async function moderateArea(command: Command, store: Store, action: RestrictionAction): Promise<void> {
   let current = await context(command);
   let registered = currentArea(command, store, current);
-  let target = await targetMember(command, current, registered.area);
+  let target = await targetMember(command, current, registered.area, store);
   assertBot(current.bot, registered.channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageRoles]);
   const previous = store.getSubareaRestriction(command.guildId, registered.channel.id, target.id);
   if ((action === 'mute' && previous?.muted) || (action === 'kick' && previous?.kicked)) {
@@ -349,13 +353,13 @@ async function moderateArea(command: Command, store: Store, action: RestrictionA
   // Confirmation and DM delivery both allow roles/ownership to change externally.
   current = await context(command);
   registered = currentArea(command, store, current);
-  target = await targetMember(command, current, registered.area);
+  target = await targetMember(command, current, registered.area, store);
   let notified = true;
   if (action === 'mute' || action === 'kick') {
     notified = await notifyPunishment(target, `subarea-${action}`, explanation);
     current = await context(command);
     registered = currentArea(command, store, current);
-    target = await targetMember(command, current, registered.area);
+    target = await targetMember(command, current, registered.area, store);
   }
   assertBot(current.bot, registered.channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageRoles]);
   registered = currentArea(command, store, current);
@@ -373,7 +377,7 @@ async function tagArea(command: Command, store: Store, kind: 'tag' | 'role-tag' 
   const { channel } = currentArea(command, store, current, true);
   const key = `${command.guildId}:${channel.id}:${current.actor.id}`;
   const now = Date.now();
-  if (now - (lastTags.get(key) ?? 0) < 30_000) throw new UserError('每個子區每 30 秒只能使用一次標註，請稍後再試。');
+  if (now - (lastTags.get(key) ?? 0) < 30_000) throw new UserError('每個子區每 30 秒只能使用一次提及通知，請稍後再試。');
   if (lastTags.size > 2000) for (const [saved, timestamp] of lastTags) if (now - timestamp >= 30_000) lastTags.delete(saved);
   assertBot(current.bot, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages,
     ...(kind === 'tag' ? [] : [PermissionFlagsBits.MentionEveryone])]);
@@ -401,16 +405,24 @@ async function tagArea(command: Command, store: Store, kind: 'tag' | 'role-tag' 
     allowedMentions = { parse: ['everyone'] };
   }
   // Check current owner again after asynchronous member resolution before sending.
-  if (store.getSubarea(command.guildId, channel.id)?.ownerId !== command.user.id) throw new UserError('子區建立者已變更，未發送標註。');
+  if (store.getSubarea(command.guildId, channel.id)?.ownerId !== command.user.id) throw new UserError('子區建立者已變更，未發送提及通知。');
   await channel.send({ content, allowedMentions });
   lastTags.set(key, Date.now());
-  const suffix = await record(command, store, 'subarea-tag', userId, '子區建立者標註', `子區 ${channel.id}；類型 ${kind}`);
-  await command.editReply({ content: `已在本子區發送標註。${suffix}`, allowedMentions: noMentions });
+  const suffix = await record(command, store, 'subarea-tag', userId, '子區建立者提及通知', `子區 ${channel.id}；類型 ${kind}`);
+  await command.editReply({ content: `已在本子區發送提及通知。${suffix}`, allowedMentions: noMentions });
 }
 
 export async function handleSubareaCommand(command: Command, store: Store): Promise<void> {
   const action = command.options.getSubcommand();
-  if (action === 'create') return createArea(command, store);
+  if (action === 'create') {
+    const kind = command.options.getString('type');
+    if (kind === 'thread' || kind === 'forum') return createThreadSubarea(command, store);
+    if (kind !== null && kind !== 'text') throw new UserError('請選擇文字頻道、討論串或論壇帖子。');
+    return createArea(command, store);
+  }
+  await ensureThreadArea(command, store);
+  if (await handleSubareaTools(command, store)) return;
+  if (await handleThreadSubarea(command, store)) return;
   if (action === 'assign') return assignArea(command, store);
   if (action === 'list') {
     const areas = await pruneDeletedAreas(command, store);
@@ -435,16 +447,20 @@ export async function reconcileSubareaRestrictions(client: Client, store: Store)
       try {
         const guild = await client.guilds.fetch(state.guildId);
         const channel = await guild.channels.fetch(state.channelId, { force: true });
-        if (!channel || channel.type !== ChannelType.GuildText) {
+        if (!channel) {
           store.deleteSubarea(state.guildId, state.channelId);
           return;
         }
+        if (channel.isThread()) return; // Thread restrictions are enforced by message/reaction events.
+        if (channel.type !== ChannelType.GuildText) return;
         const latest = store.getSubareaRestriction(state.guildId, state.channelId, state.userId);
         if (!latest || latest.userId === client.user?.id) return;
         const bot = await guild.members.fetchMe({ force: true });
         assertBot(bot, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageRoles]);
-        await writeRestrictionPermissions(channel, latest, '重新啟動後核對子區權限');
-        if (!latest.muted && !latest.kicked) store.deleteSubareaRestriction(latest.guildId, latest.channelId, latest.userId);
+        await writeRestrictionPermissions(channel, store, latest, '重新啟動後核對子區權限');
+        if (!latest.muted && !latest.kicked && !store.getSubareaLock(latest.guildId, latest.channelId)) {
+          store.deleteSubareaRestriction(latest.guildId, latest.channelId, latest.userId);
+        }
       } catch (error) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 10003) {
           store.deleteSubarea(state.guildId, state.channelId);

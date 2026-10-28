@@ -10,6 +10,13 @@ const actionLabels: Record<string, string> = {
   'subarea-create': '建立子區', 'subarea-assign': '指派子區建立者',
   'subarea-mute': '子區禁言', 'subarea-unmute': '解除子區禁言',
   'subarea-kick': '子區移除', 'subarea-unkick': '解除子區移除',
+  'subarea-pin': '子區訊息置頂', 'subarea-unpin': '取消子區置頂',
+  'subarea-delete-message': '刪除子區訊息', 'subarea-slowmode': '調整子區慢速模式',
+  'subarea-rename': '修改子區名稱', 'subarea-lock': '鎖定子區', 'subarea-unlock': '解鎖子區',
+  'subarea-delete': '刪除子區', 'subarea-delegate': '授予子區協管', 'subarea-undelegate': '撤回子區協管',
+  'subarea-tag': '子區提及通知', 'subarea-role-tag': '子區身分組通知', 'subarea-announce': '子區全體通知',
+  'warning-remove': '撤銷警告', 'role-add': '新增身分組', 'role-remove': '移除身分組',
+  'channel-edit': '編輯頻道',
 };
 
 export async function record(
