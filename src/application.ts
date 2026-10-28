@@ -1,5 +1,5 @@
 import { InteractionContextType, Routes, type REST } from 'discord.js';
-import { commands } from './commands.js';
+import { allCommands, commands } from './commands.js';
 import { ConfigError } from './config.js';
 
 const snowflake = /^[0-9]{17,20}$/;
@@ -24,14 +24,14 @@ export async function registerCommands(
   if (!snowflake.test(applicationId) || (guildId !== undefined && !snowflake.test(guildId))) {
     throw new ConfigError('無法註冊指令：應用程式或伺服器 ID 格式無效。');
   }
-  const definitions = commands.map((command) => command.toJSON());
+  const definitions = allCommands.map((command) => command.toJSON());
   const body = guildId
     ? definitions.map(({ contexts: _contexts, integration_types: _integrationTypes, ...command }) => command)
     : definitions;
   await rest.put(guildId
     ? Routes.applicationGuildCommands(applicationId, guildId)
     : Routes.applicationCommands(applicationId), { body });
-  return commands.length;
+  return allCommands.length;
 }
 
 /** Guild-only deployments still need a global DM entry point for appeals. */

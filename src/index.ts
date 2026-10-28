@@ -45,7 +45,7 @@ try {
   });
   client.once(Events.ClientReady, (ready) => {
     console.log(`已登入 ${ready.user.tag}，目前服務 ${ready.guilds.cache.size} 個伺服器。`);
-    console.log('指令已自動註冊，使用 /help 查看說明。');
+    console.log('指令與訊息 APP 選單已自動註冊，使用 /help 查看說明。');
     if (!stopping) track((async () => {
       await reconcileSubareaLocks(ready, database);
       if (!stopping) await reconcileSubareaRestrictions(ready, database);

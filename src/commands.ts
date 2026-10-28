@@ -1,5 +1,8 @@
 import {
+  ApplicationCommandType,
+  ApplicationIntegrationType,
   ChannelType,
+  ContextMenuCommandBuilder,
   InteractionContextType,
   PermissionFlagsBits,
   SlashCommandBuilder,
@@ -409,3 +412,18 @@ export const commands = [
         .addBooleanOption((option) => option.setName('nsfw').setDescription('是否標示為年齡限制頻道')),
     ),
 ];
+
+export const MESSAGE_APP_PIN_NAME = '標註／取消標註';
+export const MESSAGE_APP_DELETE_NAME = '刪除訊息';
+
+/** Native message actions appear in Discord's APP menu; authorization remains channel-specific at runtime. */
+export const messageCommands = [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME].map((name) =>
+  new ContextMenuCommandBuilder()
+    .setName(name)
+    .setType(ApplicationCommandType.Message)
+    .setContexts(InteractionContextType.Guild)
+    .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
+    .setDefaultMemberPermissions(null),
+);
+
+export const allCommands = [...commands, ...messageCommands];

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { InteractionContextType, Routes, type REST } from 'discord.js';
+import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, Routes, type REST } from 'discord.js';
 import { registerCommands, registerDmAppeal, resolveApplication } from '../src/application.js';
-import { commands } from '../src/commands.js';
+import { allCommands, commands, messageCommands, MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME } from '../src/commands.js';
 import { ConfigError, parseConfig } from '../src/config.js';
 
 const applicationId = '123456789012345678';
@@ -71,7 +71,7 @@ test('a valid but stale legacy client ID does not block token-derived registrati
     },
   };
   const application = await resolveApplication(rest);
-  assert.equal(await registerCommands(rest, application.id, config.guildId), commands.length);
+  assert.equal(await registerCommands(rest, application.id, config.guildId), allCommands.length);
   assert.deepEqual(routes, [Routes.oauth2CurrentApplication(), Routes.applicationCommands(applicationId)]);
 });
 
@@ -83,10 +83,10 @@ test('global registration preserves command contexts including bot-DM appeals', 
       return [];
     },
   };
-  assert.equal(await registerCommands(rest, applicationId), commands.length);
+  assert.equal(await registerCommands(rest, applicationId), allCommands.length);
   assert.deepEqual(calls, [{
     route: Routes.applicationCommands(applicationId),
-    body: commands.map((command) => command.toJSON()),
+    body: allCommands.map((command) => command.toJSON()),
   }]);
   const body = calls[0]?.body;
   assert.ok(Array.isArray(body));
@@ -94,6 +94,14 @@ test('global registration preserves command contexts including bot-DM appeals', 
     assert.deepEqual(command.contexts, command.name === 'appeal'
       ? [InteractionContextType.Guild, InteractionContextType.BotDM]
       : [InteractionContextType.Guild]);
+  }
+  const menus = body.filter((command) => command.type === ApplicationCommandType.Message);
+  assert.deepEqual(menus, messageCommands.map((command) => command.toJSON()));
+  assert.deepEqual(menus.map((command) => command.name), [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
+  for (const menu of menus) {
+    assert.deepEqual(menu.integration_types, [ApplicationIntegrationType.GuildInstall]);
+    assert.equal(Object.hasOwn(menu, 'description'), false);
+    assert.equal(Object.hasOwn(menu, 'options'), false);
   }
 });
 
@@ -105,16 +113,18 @@ test('guild registration strips fields unsupported by the guild command endpoint
       return [];
     },
   };
-  assert.equal(await registerCommands(rest, applicationId, guildId), commands.length);
+  assert.equal(await registerCommands(rest, applicationId, guildId), allCommands.length);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.route, Routes.applicationGuildCommands(applicationId, guildId));
   const body = calls[0]?.body;
   assert.ok(Array.isArray(body));
-  assert.deepEqual(body.map((command) => command.name), commands.map((command) => command.name));
+  assert.deepEqual(body.map((command) => command.name), allCommands.map((command) => command.name));
   for (const command of body) {
     assert.equal(Object.hasOwn(command, 'contexts'), false);
     assert.equal(Object.hasOwn(command, 'integration_types'), false);
   }
+  assert.deepEqual(body.filter((command) => command.type === ApplicationCommandType.Message).map((command) => command.name),
+    [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
 });
 
 test('invalid application or guild IDs fail before any REST mutation', async () => {
@@ -153,7 +163,7 @@ test('token-only resolution supplies the application ID used for command registr
     },
   };
   const application = await resolveApplication(rest);
-  assert.equal(await registerCommands(rest, application.id), commands.length);
+  assert.equal(await registerCommands(rest, application.id), allCommands.length);
   assert.deepEqual(routes, [Routes.oauth2CurrentApplication(), Routes.applicationCommands(applicationId)]);
 });
 

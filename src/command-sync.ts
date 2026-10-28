@@ -1,6 +1,6 @@
-import { Routes, type REST } from 'discord.js';
+import { ApplicationCommandType, ApplicationIntegrationType, Routes, type REST } from 'discord.js';
 import { registerCommands } from './application.js';
-import { commands } from './commands.js';
+import { allCommands } from './commands.js';
 import { ConfigError } from './config.js';
 
 export interface BotGuild {
@@ -85,6 +85,8 @@ function commandDefinition(value: Record<string, unknown>, guildOnly: boolean): 
       ? null : String(value.default_member_permissions),
     nsfw: value.nsfw ?? false,
     contexts: guildOnly ? null : numericList(value.contexts),
+    integration_types: guildOnly || value.type !== ApplicationCommandType.Message
+      ? null : numericList(value.integration_types ?? [ApplicationIntegrationType.GuildInstall]),
   });
 }
 
@@ -172,10 +174,13 @@ export async function syncCommandState(
   assertId(appId);
   assertId(guildId);
   const saved = validateState(state);
-  const definitions = new Map(commands.map((command) => [
-    commandKey({ name: command.name, type: 1 }),
-    commandDefinition(command.toJSON() as unknown as Record<string, unknown>, guildOnly),
-  ]));
+  const definitions = new Map(allCommands.map((command) => {
+    const definition = command.toJSON();
+    return [
+      commandKey({ name: definition.name, type: definition.type ?? 1 }),
+      commandDefinition(definition as unknown as Record<string, unknown>, guildOnly),
+    ];
+  }));
   const expected = new Set(definitions.keys());
   const staleGlobal = saved.global.filter((command) => !expected.has(commandKey(command)));
   const staleGuild = saved.guild.filter((command) => !expected.has(commandKey(command)));

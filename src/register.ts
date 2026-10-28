@@ -9,10 +9,10 @@ try {
   const count = await registerCommands(rest, application.id, guildId);
   if (guildId) {
     await registerDmAppeal(rest, application.id);
-    console.log(`已將 ${count} 個斜線指令註冊至指定伺服器。`);
+    console.log(`已將 ${count} 個應用程式指令（含訊息 APP 選單）註冊至指定伺服器。`);
     console.log('已另外註冊僅限私訊的申訴入口。');
   } else {
-    console.log(`已註冊 ${count} 個全域斜線指令；Discord 可能需要一段時間才會顯示更新。`);
+    console.log(`已註冊 ${count} 個全域應用程式指令（含訊息 APP 選單）；Discord 可能需要一段時間才會顯示更新。`);
   }
 } catch (error: unknown) {
   if (error instanceof ConfigError) {

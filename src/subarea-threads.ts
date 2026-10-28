@@ -10,7 +10,7 @@ import { logFailure, UserError } from './errors.js';
 import { requireBotPermissions, requirePrivateThreadAccess } from './permissions.js';
 import { truncate } from './presentation.js';
 import { Store, type Subarea } from './store.js';
-import { managedAreaOperation } from './subarea-tools.js';
+import { managedAreaOperation, type AreaInteraction } from './subarea-tools.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type ManagedThread = PublicThreadChannel | PrivateThreadChannel;
@@ -34,7 +34,7 @@ function botPermissions(bot: GuildMember, channel: GuildBasedChannel, flags: big
 }
 
 /** Existing human-created posts need no administrator registration command. */
-export async function ensureThreadArea(command: Command, store: Store): Promise<void> {
+export async function ensureThreadArea(command: AreaInteraction, store: Store): Promise<void> {
   const channel = await command.guild.channels.fetch(command.channelId, { force: true });
   if (!isSubareaThread(channel) || channel.guildId !== command.guildId
     || store.getSubarea(command.guildId, channel.id) || !channel.ownerId) return;

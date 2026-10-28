@@ -1,6 +1,6 @@
 # Discord 伺服器管理機器人
 
-使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。使用 Slash Commands，不需要 Message Content Intent。
+使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
 
 ## 環境需求
 
@@ -62,7 +62,7 @@ npm run invite
 
 在 **伺服器設定 → 身分組** 中，將機器人的身分組放在它需要管理的成員身分組上方。頻道覆寫權限也必須允許機器人檢視頻道及執行對應操作。
 
-舊版機器人升級後，請重新執行 `npm run invite`，開啟新網址並對同一伺服器完成授權，以補上子區功能所需的權限。機器人仍無須 Administrator。
+若從尚未具備子區及置頂權限的舊版升級，請重新執行 `npm run invite`，開啟新網址並對同一伺服器完成授權。已具備這些權限的部署，新增訊息 APP 選單時不需要重新邀請機器人。機器人仍無須 Administrator。
 
 ## 4. 啟動
 
@@ -82,7 +82,7 @@ npm run build
 npm start
 ```
 
-啟動時會先向 Discord 取得 Application 資料、自動註冊 Slash Commands，再連線 Gateway。無須另外執行指令註冊，也無須提供 Application ID 或伺服器 ID。
+啟動時會先向 Discord 取得 Application 資料、自動註冊 Slash Commands 與訊息 APP 選單，再連線 Gateway。無須另外執行指令註冊，也無須提供 Application ID 或伺服器 ID。
 
 預設註冊全域指令，Discord 更新可能需要等待。開發測試時可選填 `DISCORD_GUILD_ID`，讓伺服器指令僅註冊到該伺服器，通常更快生效；此模式也會額外提供僅限 Bot 私訊的申訴入口。若要在未啟動機器人時單獨註冊，也可執行 `npm run register`。註冊會替換此 Application 在所選範圍的指令清單，請為此機器人使用獨立的 Application。改用其他註冊範圍不會自動移除先前範圍的指令。
 
@@ -161,6 +161,24 @@ npm run commands:sync
 踢出、封鎖與清理訊息會先顯示僅操作者可見的確認按鈕，30 秒後失效。執行時仍會重新檢查權限。無法管理伺服器擁有者、自己或機器人本身，也不能對同級或較高角色成員執行受限制的操作；伺服器擁有者執行的 Discord 管理操作仍受機器人角色階級限制。本機警告紀錄不需要機器人修改目標角色。Discord 不允許對管理員或機器人成員設定禁言。
 
 清理功能支援伺服器的文字及公告頻道。Discord 批次刪除限制只允許清理未滿 14 天的訊息，因此送出數量可能少於要求數量。確認期間新到達的訊息不會加入刪除範圍。清理結果會回報送出數量；Discord 不回傳批次操作的實際刪除數量，其他管理員同時刪除訊息也可能影響結果。刪除、踢出與封鎖會立即影響伺服器，請先在測試頻道驗證。
+
+### 訊息 APP 選單
+
+可直接對選中的訊息置頂或刪除，無須先複製訊息連結或 ID；原有的 `/subarea pin`、`unpin` 與 `delete-message` 指令仍可使用。
+
+- **手機：** 長按要操作的訊息 → **APP** → 選擇機器人的操作。
+- **電腦：** 右鍵點擊要操作的訊息 → **Apps／應用程式** → 選擇操作。
+
+| APP 操作 | 功能 | 操作者權限 |
+| --- | --- | --- |
+| `標註／取消標註` | 尚未置頂的訊息會置頂，已置頂則取消；依執行時的訊息狀態判斷。 | 已登記子區僅限目前建立者；一般文字／公告頻道需原生 Pin Messages 權限。 |
+| `刪除訊息` | 確認後刪除所選的單則訊息，確認按鈕 30 秒後失效。 | 已登記子區限建立者、該區協管或原生 Administrator；一般文字／公告頻道需原生 Manage Messages 權限。 |
+
+選單可用於獨立文字子區及討論串／論壇帖子。用戶原生建立的帖子會沿用既有的帖主登記方式；私密討論串仍會另外檢查成員資格。Bot 需要對應的查看、歷史、Pin Messages 或 Manage Messages 權限。子區的「標註」仍只限建立者，協管與其他管理員不能藉 APP 選單代替建立者置頂。
+
+確認提示和操作結果僅操作者可見。程式只操作所選訊息所在的同一伺服器與頻道，會在執行前重新檢查權限，並保存本服案件紀錄。訊息 APP 操作不需要開啟 Message Content Intent。
+
+選單需透過伺服器安裝的機器人使用，邀請範圍須包含 `applications.commands`。若更新後未看到選單，確認服務已成功啟動並註冊，再重新開啟 Discord；全域指令可能仍在傳播。單純新增 APP 選單無須執行 `commands:sync`，該工具用於處理重用 Bot 時遺留的舊指令。
 
 ### 管理功能授權
 
@@ -424,7 +442,7 @@ sudo -u discordbot -H git -C /opt/discord-manager pull --ff-only
 sudo -u discordbot -H npm --prefix /opt/discord-manager run build
 ```
 
-產生新的邀請網址，開啟網址對原伺服器重新授權，補上子區所需的 Manage Channels、Manage Roles、Manage Threads、Pin Messages 與討論串發言／建立等權限：
+若 Bot 尚缺子區或置頂權限，才需執行下列命令，開啟網址對原伺服器重新授權。已具備 Manage Channels、Manage Roles、Manage Threads、Pin Messages 與討論串發言／建立等權限時，可直接繼續啟動服務：
 
 ```sh
 sudo -u discordbot -H npm --prefix /opt/discord-manager run invite
@@ -475,6 +493,7 @@ npm run build
 ## 常見問題
 
 - **指令沒有出現：** 確認機器人已成功啟動並完成自動註冊，且邀請包含 `applications.commands`。若有設定 `DISCORD_GUILD_ID`，確認是目前伺服器；全域指令可能仍在更新。也可執行 `npm run register` 手動重試。
+- **訊息 APP 選單沒有出現：** 在訊息上長按／右鍵，進入 APP／Apps 選單，確認目前伺服器已安裝此 Bot。更新並重啟 Bot 後重新開啟 Discord，等待全域指令傳播；既有 Slash Commands 不會因新增選單而移除。
 - **Missing Permissions 或無法管理某位成員：** 檢查機器人及操作者的功能權限、頻道覆寫權限，以及雙方的最高角色位置。
 - **授權後看不到管理指令：** 查看伺服器設定中的應用程式整合與指令使用權限。Bot 授權不會移除 Discord 另外設定的指令禁止規則。
 - **申訴沒有出現在頻道：** 用 `/appeal queue` 確認工單是否已保存，並檢查 `/config appeals`、頻道私人設定及 Bot 的發送／嵌入連結權限。

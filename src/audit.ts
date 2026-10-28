@@ -1,4 +1,4 @@
-import { ChannelType, EmbedBuilder, escapeMarkdown, type ChatInputCommandInteraction } from 'discord.js';
+import { ChannelType, EmbedBuilder, escapeMarkdown, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
 import { logFailure, UserError } from './errors.js';
 import { truncate } from './presentation.js';
 import type { Store } from './store.js';
@@ -17,10 +17,11 @@ const actionLabels: Record<string, string> = {
   'subarea-tag': '子區提及通知', 'subarea-role-tag': '子區身分組通知', 'subarea-announce': '子區全體通知',
   'warning-remove': '撤銷警告', 'role-add': '新增身分組', 'role-remove': '移除身分組',
   'channel-edit': '編輯頻道',
+  'message-pin': '置頂訊息', 'message-unpin': '取消置頂訊息', 'message-delete': '刪除訊息',
 };
 
 export async function record(
-  command: ChatInputCommandInteraction<'cached'>, store: Store,
+  command: ChatInputCommandInteraction<'cached'> | MessageContextMenuCommandInteraction<'cached'>, store: Store,
   action: string, userId: string | null, reason: string, details?: string,
 ): Promise<string> {
   let caseNumber: number;

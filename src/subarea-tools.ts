@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType, EmbedBuilder,
   OverwriteType, PermissionFlagsBits, escapeMarkdown,
-  type ChatInputCommandInteraction, type Client, type GuildMember,
+  type ChatInputCommandInteraction, type Client, type GuildMember, type MessageContextMenuCommandInteraction,
   type OverwriteData, type TextChannel, type PublicThreadChannel, type PrivateThreadChannel,
 } from 'discord.js';
 import { record } from './audit.js';
@@ -11,6 +11,7 @@ import { truncate } from './presentation.js';
 import { Store, type Subarea } from './store.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
+export type AreaInteraction = Command | MessageContextMenuCommandInteraction<'cached'>;
 export type ManagedChannel = TextChannel | PublicThreadChannel | PrivateThreadChannel;
 export interface ManagedAreaContext { actor: GuildMember; bot: GuildMember; channel: ManagedChannel; area: Subarea }
 type Baseline = { id: string; type: OverwriteType; allow: string; deny: string; existed?: boolean };
@@ -42,7 +43,7 @@ function administrator(actor: GuildMember): boolean {
 
 /** Native thread ownership is adopted before this entry point by the thread adapter. */
 export async function refreshManagedArea(
-  command: Command, store: Store, mode: 'manage' | 'owner' | 'owner-admin' = 'manage',
+  command: AreaInteraction, store: Store, mode: 'manage' | 'owner' | 'owner-admin' = 'manage',
 ): Promise<ManagedAreaContext> {
   await command.guild.roles.fetch();
   const [actor, bot, candidate] = await Promise.all([
@@ -203,7 +204,7 @@ export function parseSubareaMessage(input: string, guildId: string, channelId: s
   return match[3]!;
 }
 
-async function confirmation(command: Command, label: string, stage: string): Promise<boolean> {
+async function confirmation(command: AreaInteraction, label: string, stage: string): Promise<boolean> {
   const yes = `subarea-tool:${command.id}:${stage}:yes`;
   const no = `subarea-tool:${command.id}:${stage}:no`;
   const reply = await command.editReply({ content: `${label}\n請在 30 秒內確認。`, embeds: [], allowedMentions: noMentions,
@@ -226,22 +227,54 @@ async function confirmation(command: Command, label: string, stage: string): Pro
   }
 }
 
-async function mutateMessage(command: Command, store: Store, action: string): Promise<void> {
+/** Shared by slash commands and the selected-message APP menu; the caller owns the area lock. */
+export async function mutateSubareaMessage(
+  command: AreaInteraction, store: Store,
+  action: 'pin' | 'unpin' | 'toggle-pin' | 'delete-message', messageId: string,
+): Promise<void> {
+  if (!/^\d{17,20}$/.test(messageId)) throw new UserError('請選擇有效的子區訊息。');
   const mode = action === 'delete-message' ? 'manage' : 'owner';
   let current = await refreshManagedArea(command, store, mode);
-  const id = parseSubareaMessage(command.options.getString('message', true), command.guildId, current.channel.id);
-  const message = await current.channel.messages.fetch(id);
-  if (message.channelId !== current.channel.id || message.guildId !== command.guildId) throw new UserError('找不到此子區內的訊息。');
+  async function selectedMessage(channel: ManagedChannel) {
+    try {
+      const message = await channel.messages.fetch({ message: messageId, force: true, cache: false });
+      if (message.id !== messageId || message.channelId !== channel.id || message.guildId !== command.guildId) {
+        throw new UserError('找不到此子區內的訊息。');
+      }
+      return message;
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 10008) {
+        throw new UserError('這則訊息已被刪除，未執行操作。');
+      }
+      throw error;
+    }
+  }
+  await selectedMessage(current.channel);
   if (action === 'delete-message' && !await confirmation(command, '確定刪除此訊息？刪除後無法還原。', 'message')) return;
+  current = await refreshManagedArea(command, store, mode);
+  const message = await selectedMessage(current.channel);
+  // Message lookup itself yields; honor ownership, delegate and private-access changes during that lookup.
   current = await refreshManagedArea(command, store, mode);
   const permission = action === 'delete-message' ? PermissionFlagsBits.ManageMessages : PermissionFlagsBits.PinMessages;
   botPermissions(current, [PermissionFlagsBits.ReadMessageHistory, permission]);
-  if (action === 'delete-message') await message.delete();
-  else if (action === 'pin') await message.pin(`子區建立者 ${command.user.id} 置頂`);
+  const operation = action === 'toggle-pin' ? (message.pinned ? 'unpin' : 'pin') : action;
+  if ((operation === 'pin' && message.pinned === true) || (operation === 'unpin' && message.pinned === false)) {
+    await command.editReply({ content: operation === 'pin' ? '這則訊息已置頂。' : '這則訊息目前沒有置頂。',
+      components: [], allowedMentions: noMentions });
+    return;
+  }
+  if (operation === 'delete-message') await message.delete();
+  else if (operation === 'pin') await message.pin(`子區建立者 ${command.user.id} 置頂`);
   else await message.unpin(`子區建立者 ${command.user.id} 取消置頂`);
-  const suffix = await record(command, store, `subarea-${action}`, null, action === 'delete-message' ? '刪除子區訊息' : action === 'pin' ? '置頂子區訊息' : '取消置頂子區訊息', `子區 ${current.channel.id} · 訊息 ${id}`);
-  await command.editReply({ content: (action === 'delete-message' ? '已刪除訊息。' : action === 'pin' ? '已置頂訊息。' : '已取消置頂訊息。') + suffix,
+  const suffix = await record(command, store, `subarea-${operation}`, null, operation === 'delete-message' ? '刪除子區訊息' : operation === 'pin' ? '置頂子區訊息' : '取消置頂子區訊息', `子區 ${current.channel.id} · 訊息 ${messageId}`);
+  await command.editReply({ content: (operation === 'delete-message' ? '已刪除訊息。' : operation === 'pin' ? '已置頂訊息。' : '已取消置頂訊息。') + suffix,
     components: [], allowedMentions: noMentions });
+}
+
+async function mutateMessage(command: Command, store: Store, action: 'pin' | 'unpin' | 'delete-message'): Promise<void> {
+  await refreshManagedArea(command, store, action === 'delete-message' ? 'manage' : 'owner');
+  const id = parseSubareaMessage(command.options.getString('message', true), command.guildId, command.channelId);
+  await mutateSubareaMessage(command, store, action, id);
 }
 
 async function manageDelegates(command: Command, store: Store, action: string): Promise<void> {

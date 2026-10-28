@@ -16,6 +16,7 @@ import { handleSubareaCommand } from './subareas.js';
 import { scopeForCommand } from './domain.js';
 import { assertPrivateAppealChannel } from './appeal-privacy.js';
 import { handleAdminCommand } from './admin.js';
+import { handleMessageAppCommand } from './message-apps.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -216,7 +217,7 @@ async function run(command: Command, store: Store): Promise<void> {
     await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器管理助手')
       .setDescription('以 Slash 指令管理伺服器。管理操作會檢查權限與角色階級，並留下案件紀錄。')
       .addFields(
-        { name: '一般', value: '`/help` 指令說明\n`/ping` 連線狀態' },
+        { name: '一般', value: '`/help` 指令說明\n`/ping` 連線狀態\n長按／右鍵訊息 → APP → 標註／取消標註、刪除訊息' },
         { name: '成員管理', value: '`/warn` 新增警告\n`/warnings` 最近 10 筆警告\n`/timeout` 禁言（最長 28 天）\n`/untimeout` 解除禁言\n`/kick` 踢出\n`/ban` 封鎖\n`/unban` 以 ID 解除封鎖' },
         { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
@@ -343,6 +344,10 @@ async function run(command: Command, store: Store): Promise<void> {
 export async function handleInteraction(interaction: Interaction, store: Store): Promise<void> {
   try {
     if (!interaction.isChatInputCommand()) {
+      if (interaction.isMessageContextMenuCommand()) {
+        await handleMessageAppCommand(interaction, store);
+        return;
+      }
       await handleAppealInteraction(interaction, store);
       return;
     }

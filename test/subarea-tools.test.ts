@@ -54,7 +54,10 @@ function fixture(store: Store, action: string, thread = false) {
         if (state.failSet && !state.failedSet) { state.failedSet = true; throw Object.assign(new Error('Denied'), { code: 50013 }); }
         cache.clear(); for (const entry of entries) overwrite(entry.id, entry.allow, entry.deny, entry.type);
       } },
-    messages: { async fetch(messageId: string) { assert.equal(messageId, id.message); state.onFetch(); return message; } },
+    messages: { async fetch(options: { message: string; force: boolean; cache: boolean }) {
+      assert.equal(options.message, id.message); assert.equal(options.force, true); assert.equal(options.cache, false);
+      state.onFetch(); return message;
+    } },
     async setRateLimitPerUser(seconds: number) { channel.rateLimitPerUser = seconds; counters.edits++; },
     async setName(name: string) { assert.equal(name, state.name); counters.edits++; },
     async edit(options: { locked: boolean; archived: boolean }) { channel.locked = options.locked; channel.archived = options.archived; counters.edits++; },

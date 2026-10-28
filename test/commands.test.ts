@@ -2,11 +2,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   ApplicationCommandOptionType,
+  ApplicationCommandType,
+  ApplicationIntegrationType,
   ChannelType,
   InteractionContextType,
   PermissionFlagsBits,
 } from 'discord.js';
-import { commands, permissionForCommand } from '../src/commands.js';
+import {
+  allCommands, commands, messageCommands, permissionForCommand,
+  MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME,
+} from '../src/commands.js';
 
 const serialized = commands.map((command) => command.toJSON());
 
@@ -42,6 +47,27 @@ test('serializes the command allowlist with appeals available in bot DMs', () =>
     assert.ok(command.description.length > 0);
     assert.ok(command.description.length <= 100);
   }
+});
+
+test('message APP actions target selected messages and retain runtime channel authorization', () => {
+  const menus = messageCommands.map((command) => command.toJSON());
+  assert.deepEqual(menus.map((command) => command.name), [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
+  assert.equal(allCommands.length, commands.length + 2);
+  assert.equal(commands.length, 15, 'existing slash commands remain available separately');
+  for (const menu of menus) {
+    assert.equal(menu.type, ApplicationCommandType.Message);
+    assert.deepEqual(menu.contexts, [InteractionContextType.Guild]);
+    assert.deepEqual(menu.integration_types, [ApplicationIntegrationType.GuildInstall]);
+    assert.equal(menu.default_member_permissions, null, 'creators without native pin permission must reach runtime checks');
+    assert.equal(Object.hasOwn(menu, 'description'), false);
+    assert.equal(Object.hasOwn(menu, 'options'), false);
+    assert.ok(menu.name.length >= 1 && menu.name.length <= 32);
+  }
+  const identities = allCommands.map((command) => {
+    const definition = command.toJSON();
+    return `${definition.type ?? ApplicationCommandType.ChatInput}:${definition.name}`;
+  });
+  assert.equal(new Set(identities).size, identities.length);
 });
 
 test('delegatable management commands remain visible while preserving runtime permission requirements', () => {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { InteractionContextType, PermissionFlagsBits, Routes, type REST } from 'discord.js';
+import { ApplicationCommandType, ApplicationIntegrationType, InteractionContextType, PermissionFlagsBits, Routes, type REST } from 'discord.js';
 import {
   listBotGuilds, readCommandState, syncCommandState,
   type CommandState, type SavedCommand,
 } from '../src/command-sync.js';
-import { commands } from '../src/commands.js';
+import { allCommands, messageCommands, MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME } from '../src/commands.js';
 import { ConfigError } from '../src/config.js';
 
 const appId = '123456789012345678';
@@ -34,7 +34,7 @@ function apiCommand(definition: object, index: number, guildOnly = false): Saved
   };
 }
 
-const currentCommands = (guildOnly = false): SavedCommand[] => commands.map((definition, index) =>
+const currentCommands = (guildOnly = false): SavedCommand[] => allCommands.map((definition, index) =>
   apiCommand(definition.toJSON(), index, guildOnly));
 
 function namedCommand(entries: SavedCommand[], name: string): SavedCommand {
@@ -89,7 +89,7 @@ test('global sync installs current definitions before clearing only the selected
   };
   const { rest, calls, snapshot } = mockState(saved);
   assert.deepEqual(await syncCommandState(rest, appId, guildId, saved, false), {
-    registered: commands.length, removedGuild: 2, removedGlobal: 1,
+    registered: allCommands.length, removedGuild: 2, removedGlobal: 1,
   });
   assert.deepEqual(calls.map(({ method, route }) => ({ method, route })), [
     { method: 'PUT', route: globalRoute },
@@ -98,7 +98,7 @@ test('global sync installs current definitions before clearing only the selected
     { method: 'GET', route: guildRoute },
   ]);
   assert.deepEqual(calls[1]?.body, []);
-  assert.deepEqual(snapshot().global.map((entry) => entry.name), commands.map((entry) => entry.name));
+  assert.deepEqual(snapshot().global.map((entry) => entry.name), allCommands.map((entry) => entry.name));
   assert.deepEqual(snapshot().guild, []);
   assert.equal(calls.some((entry) => entry.route === otherGuildRoute), false);
 });
@@ -117,15 +117,80 @@ test('guild-only sync restores its full command set and prunes only unsupported 
   };
   const { rest, calls, snapshot } = mockState(saved);
   assert.deepEqual(await syncCommandState(rest, appId, guildId, saved, true), {
-    registered: commands.length, removedGuild: 1, removedGlobal: 3,
+    registered: allCommands.length, removedGuild: 1, removedGlobal: 3,
   });
   assert.deepEqual(calls.filter((entry) => entry.method === 'PUT').map((entry) => entry.route), [guildRoute]);
   assert.equal(calls[0]?.route, guildRoute);
   assert.deepEqual(calls.filter((entry) => entry.method === 'DELETE').map((entry) => entry.route),
     saved.global.slice(1).map((entry) => Routes.applicationCommand(appId, entry.id)));
   assert.deepEqual(snapshot().global, [saved.global[0]]);
-  assert.deepEqual(snapshot().guild.map((entry) => entry.name), commands.map((entry) => entry.name));
+  assert.deepEqual(snapshot().guild.map((entry) => entry.name), allCommands.map((entry) => entry.name));
   assert.equal(calls.some((entry) => entry.route.includes(otherGuildId)), false);
+});
+
+test('guild sync preserves supported message identities and prunes same-name commands of another type', async () => {
+  const saved: CommandState = {
+    global: [command(100, MESSAGE_APP_PIN_NAME, ApplicationCommandType.Message),
+      command(101, MESSAGE_APP_PIN_NAME, ApplicationCommandType.ChatInput),
+      command(102, MESSAGE_APP_DELETE_NAME, ApplicationCommandType.Message),
+      command(103, MESSAGE_APP_DELETE_NAME, ApplicationCommandType.User),
+      command(104, '舊訊息工具', ApplicationCommandType.Message)],
+    guild: [],
+  };
+  const { rest, calls, snapshot } = mockState(saved);
+  assert.deepEqual(await syncCommandState(rest, appId, guildId, saved, true), {
+    registered: allCommands.length, removedGuild: 0, removedGlobal: 3,
+  });
+  assert.deepEqual(calls.filter((entry) => entry.method === 'DELETE').map((entry) => entry.route),
+    [saved.global[1], saved.global[3], saved.global[4]].map((entry) => Routes.applicationCommand(appId, entry!.id)));
+  assert.deepEqual(snapshot().global.map((entry) => [entry.type, entry.name]),
+    [[ApplicationCommandType.Message, MESSAGE_APP_PIN_NAME], [ApplicationCommandType.Message, MESSAGE_APP_DELETE_NAME]]);
+  const menus = snapshot().guild.filter((entry) => entry.type === ApplicationCommandType.Message);
+  assert.deepEqual(menus.map((entry) => entry.name), messageCommands.map((entry) => entry.name));
+});
+
+test('verification rejects current message APP actions returned with a stale command type', async () => {
+  for (const guildOnly of [false, true]) {
+    const saved: CommandState = { global: [], guild: [] };
+    const { rest } = mockState(saved);
+    const active = currentCommands(guildOnly);
+    namedCommand(active, MESSAGE_APP_DELETE_NAME).type = ApplicationCommandType.User;
+    rest.get = async (route) => route === globalRoute ? guildOnly ? [] : active : guildOnly ? active : [];
+    await assert.rejects(syncCommandState(rest, appId, guildId, saved, guildOnly), ConfigError);
+  }
+});
+
+test('global sync accepts message API omitted descriptions and options but requires guild invocation contexts', async () => {
+  for (const wrongContext of [false, true]) {
+    const saved: CommandState = { global: [], guild: [] };
+    const { rest } = mockState(saved);
+    const active = currentCommands();
+    for (const entry of active.filter((command) => command.type === ApplicationCommandType.Message)) {
+      delete entry.description;
+      delete entry.options;
+      if (wrongContext) entry.contexts = [InteractionContextType.BotDM];
+    }
+    rest.get = async (route) => route === globalRoute ? active : [];
+    const result = syncCommandState(rest, appId, guildId, saved, false);
+    if (wrongContext) await assert.rejects(result, ConfigError);
+    else assert.equal((await result).registered, allCommands.length);
+  }
+});
+
+test('global verification requires guild-install message actions and accepts the API guild-install default', async () => {
+  for (const installs of [undefined, [ApplicationIntegrationType.UserInstall],
+    [ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall]]) {
+    const saved: CommandState = { global: [], guild: [] };
+    const { rest } = mockState(saved);
+    const active = currentCommands();
+    const pin = namedCommand(active, MESSAGE_APP_PIN_NAME);
+    if (installs === undefined) delete pin.integration_types;
+    else pin.integration_types = installs;
+    rest.get = async (route) => route === globalRoute ? active : [];
+    const result = syncCommandState(rest, appId, guildId, saved, false);
+    if (installs === undefined) assert.equal((await result).registered, allCommands.length);
+    else await assert.rejects(result, ConfigError);
+  }
 });
 
 test('an install failure propagates without clearing legacy command sources', async () => {
@@ -263,7 +328,7 @@ test('API metadata and explicit optional defaults do not falsely fail functional
     }
     rest.get = async (route) => route === globalRoute ? guildOnly ? [] : active : guildOnly ? active : [];
     assert.deepEqual(await syncCommandState(rest, appId, guildId, initial, guildOnly), {
-      registered: commands.length, removedGuild: 0, removedGlobal: 0,
+      registered: allCommands.length, removedGuild: 0, removedGlobal: 0,
     });
   }
 });
