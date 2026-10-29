@@ -7,6 +7,7 @@ type ChineseNames = readonly [traditional: string, simplified: string];
 
 const commandNames: Record<string, ChineseNames> = {
   help: ['說明', '帮助'], ping: ['連線狀態', '连接状态'], records: ['成員紀錄', '成员记录'],
+  notifications: ['通知設定', '通知设置'],
   warn: ['警告', '警告'], warnings: ['警告紀錄', '警告记录'], timeout: ['禁言', '禁言'],
   untimeout: ['解除禁言', '解除禁言'], kick: ['踢出', '踢出'], ban: ['封鎖', '封禁'],
   unban: ['解除封鎖', '解除封禁'], clear: ['清理訊息', '清理消息'], config: ['設定', '设置'],

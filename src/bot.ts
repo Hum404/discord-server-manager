@@ -237,7 +237,7 @@ async function run(command: Command, store: Store): Promise<void> {
       .addFields(
         { name: '一般', value: '`/help` 指令說明\n`/ping` 連線狀態\n長按／右鍵訊息 → APP → 標註／取消標註、刪除訊息' },
         { name: '成員管理', value: '`/warn` 新增警告\n`/warnings` 最近 10 筆警告\n`/timeout` 禁言（最長 28 天）\n`/untimeout` 解除禁言\n`/kick` 踢出\n`/ban` 封鎖\n`/unban` 以 ID 解除封鎖' },
-        { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config punishments` 伺服器處罰公告及私訊\n`/config subarea-notices` 子區內通知開關（預設開啟）\n`/config notification-actions` 勾選要通知的操作項目\n`/config punishment-test` 測試處罰公告\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
+        { name: '頻道與設定', value: '`/notifications` 開啟通知設定卡片\n`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config punishments` 伺服器處罰公告及私訊\n`/config subarea-notices` 子區內通知開關（預設開啟）\n`/config punishment-test` 測試處罰公告\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
         { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`/subarea unpin` 建立者置頂訊息\n`/subarea mute`、`/subarea kick` 管理區內成員\n`/subarea delegate`、`/subarea undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
         { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`/subarea unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`/subarea role-tag`、`/subarea announce` 建立者提及通知' },
@@ -254,6 +254,7 @@ async function run(command: Command, store: Store): Promise<void> {
     await command.editReply(`機器人運作中。Gateway 延遲：${command.client.ws.ping < 0 ? '計算中' : `${command.client.ws.ping} ms`}。`);
     return;
   }
+  if (name === 'notifications') return handleNotificationActionConfig(command, store);
   let context = await getContext(command, store);
   if (name === 'config') return configure(command, context, store);
   if (name === 'access') return handleAccessCommand(command, store);

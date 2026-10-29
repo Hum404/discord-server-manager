@@ -143,10 +143,10 @@ test('warn rejects an actor without permission before writing a warning or case'
 test('help uses consistent Traditional Chinese references in either Chinese Discord interface', async () => {
   const store = new Store(':memory:');
   try {
-    for (const [locale, delegate, settings] of [
-      ['zh-TW', '/子區 設定協管', '/設定 子區通知'],
-      ['zh-CN', '/子區 設定協管', '/設定 子區通知'],
-      ['en-US', '/subarea delegate', '/config subarea-notices'],
+    for (const [locale, delegate, settings, shortcut] of [
+      ['zh-TW', '/子區 設定協管', '/設定 子區通知', '/通知設定'],
+      ['zh-CN', '/子區 設定協管', '/設定 子區通知', '/通知設定'],
+      ['en-US', '/subarea delegate', '/config subarea-notices', '/notifications'],
     ]) {
       const f = fixture('help');
       Object.assign(f.interaction, { locale });
@@ -154,8 +154,51 @@ test('help uses consistent Traditional Chinese references in either Chinese Disc
       const text = f.finalReply().embeds?.[0]?.toJSON().fields?.map((field) => field.value).join('\n') ?? '';
       assert.ok(text.includes(delegate!));
       assert.ok(text.includes(settings!));
+      assert.ok(text.includes(shortcut!));
       if (locale !== 'en-US') assert.doesNotMatch(text, /\/(?:subarea|config|access|admin|appeal|records)\b/);
       assert.equal(f.counters.actorRefreshes, 0);
+    }
+    assert.deepEqual(store.listCases(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('the single-command notification shortcut and Simplified entry open an ephemeral card without arguments', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (const name of ['notifications', '通知设置']) {
+      const f = fixture(name);
+      f.actor.permissions.add(PermissionFlagsBits.ManageGuild);
+      const rendered: unknown[] = [];
+      Object.assign((f.interaction as unknown as { options: object }).options, {
+        getString: (option: string) => { assert.equal(option, 'kind'); return null; },
+      });
+      Object.assign(f.interaction, { async editReply(payload: unknown) {
+        rendered.push(payload);
+        return { id: '100000000000000090', async awaitMessageComponent() { throw { code: 'InteractionCollectorError' }; } };
+      } });
+      await handleInteraction(f.interaction, store);
+      assert.deepEqual(f.deferOptions, [{ flags: MessageFlags.Ephemeral }]);
+      const card = JSON.parse(JSON.stringify(rendered[0])) as {
+        embeds: Array<{ title: string }>; components: Array<{ components: Array<{ options: Array<{ value: string }> }> }>;
+      };
+      assert.equal(card.embeds[0]?.title, '通知設定');
+      assert.equal(card.components.length, 1);
+      assert.deepEqual(card.components[0]?.components[0]?.options.map((option) => option.value), ['management', 'subarea']);
+      assert.equal(f.counters.actorRefreshes, 1, 'the shortcut performs the fresh native manager check');
+    }
+    assert.deepEqual(store.listCases(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('ordinary members cannot open the notification card through either shortcut name', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (const name of ['notifications', '通知设置']) {
+      const f = fixture(name);
+      store.setGrant(ids.guild, ids.actor, 'clear', ids.issuer);
+      await handleInteraction(f.interaction, store);
+      assert.match(f.finalReply().content ?? '', /原生.*管理伺服器/);
+      assert.deepEqual(f.deferOptions, [{ flags: MessageFlags.Ephemeral }]);
     }
     assert.deepEqual(store.listCases(ids.guild), []);
   } finally { store.close(); }

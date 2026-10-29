@@ -20,6 +20,7 @@ const commandPermissions: Record<string, bigint> = {
   unban: PermissionFlagsBits.BanMembers,
   clear: PermissionFlagsBits.ManageMessages,
   config: PermissionFlagsBits.ManageGuild,
+  notifications: PermissionFlagsBits.ManageGuild,
   access: PermissionFlagsBits.Administrator,
   admin: PermissionFlagsBits.ManageGuild,
 };
@@ -56,6 +57,14 @@ const appealStatusChoices = [
 export const commands = [
   command('help', '查看機器人的管理指令與使用方式'),
   command('ping', '查看機器人連線狀態與延遲'),
+  command('notifications', '開啟僅自己可見的通知設定卡片')
+    .addStringOption((option) =>
+      option.setName('kind').setDescription('直接開啟此通知類型；省略則在卡片內選擇')
+        .addChoices(
+          { name: '管理通知', value: 'management' },
+          { name: '子區通知', value: 'subarea' },
+        ),
+    ),
   command('records', '查看本服成員操作紀錄；預設為自己執行的操作')
     .setDefaultMemberPermissions(null)
     .addUserOption((option) => option.setName('user').setDescription('要查看的成員；省略為自己'))
@@ -165,9 +174,9 @@ export const commands = [
         ),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('notification-actions').setDescription('以多選選單設定管理通知或子區通知要發送哪些操作')
+      subcommand.setName('notification-actions').setDescription('開啟通知設定卡片，選擇通知類型與要發送的操作項目')
         .addStringOption((option) =>
-          option.setName('kind').setDescription('要自訂的通知類型').setRequired(true)
+          option.setName('kind').setDescription('直接開啟此通知類型；省略則在卡片內選擇')
             .addChoices(
               { name: '管理通知', value: 'management' },
               { name: '子區通知', value: 'subarea' },

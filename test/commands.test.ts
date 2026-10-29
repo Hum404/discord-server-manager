@@ -38,7 +38,7 @@ function getSubOption(commandName: string, subcommandName: string, optionName: s
 
 test('serializes the command allowlist with appeals available in bot DMs', () => {
   assert.deepEqual(serialized.map((command) => command.name).sort(), [
-    'help', 'ping', 'records', 'warn', 'warnings', 'timeout', 'untimeout',
+    'help', 'ping', 'notifications', 'records', 'warn', 'warnings', 'timeout', 'untimeout',
     'kick', 'ban', 'unban', 'clear', 'config', 'access', 'appeal', 'subarea', 'admin',
   ].sort());
   for (const command of serialized) {
@@ -54,7 +54,7 @@ test('message APP actions target selected messages and retain runtime channel au
   const menus = messageCommands.map((command) => command.toJSON());
   assert.deepEqual(menus.map((command) => command.name), [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
   assert.equal(allCommands.length, commands.length + simplifiedCommands.length + 2);
-  assert.equal(commands.length, 16, 'slash commands include the member-record query');
+  assert.equal(commands.length, 17, 'slash commands include the direct notification-settings card');
   for (const menu of menus) {
     assert.equal(menu.type, ApplicationCommandType.Message);
     assert.deepEqual(menu.contexts, [InteractionContextType.Guild]);
@@ -82,13 +82,14 @@ test('delegatable management commands remain visible while preserving runtime pe
     ['unban', PermissionFlagsBits.BanMembers],
     ['clear', PermissionFlagsBits.ManageMessages],
     ['config', PermissionFlagsBits.ManageGuild],
+    ['notifications', PermissionFlagsBits.ManageGuild],
     ['access', PermissionFlagsBits.Administrator],
     ['admin', PermissionFlagsBits.ManageGuild],
   ]);
   for (const command of serialized) {
     const permission = expected.get(command.name);
     assert.equal(permissionForCommand(command.name), permission ?? null);
-    if (['config', 'access', 'admin'].includes(command.name)) {
+    if (['config', 'notifications', 'access', 'admin'].includes(command.name)) {
       assert.equal(command.default_member_permissions, permission!.toString(), `/${command.name} must keep its native restriction`);
     } else {
       assert.ok(command.default_member_permissions == null,
@@ -193,18 +194,25 @@ test('configuration permits only supported destination channels and bounded welc
   assert.deepEqual(subareaCategory.channel_types, [ChannelType.GuildCategory]);
 });
 
-test('notification action selection requires a bounded management or subarea category', () => {
+test('notification settings open without arguments and optionally select a bounded category', () => {
   const subcommand = getOption('config', 'notification-actions');
   assert.ok(subcommand.type === ApplicationCommandOptionType.Subcommand);
   assert.equal(subcommand.options?.length, 1);
   const kind = getSubOption('config', 'notification-actions', 'kind');
   assert.ok(kind.type === ApplicationCommandOptionType.String);
-  assert.equal(kind.required, true);
+  assert.notEqual(kind.required, true, 'the settings card must open without choosing a category first');
   assert.deepEqual(kind.choices?.map((choice) => ({ name: choice.name, value: choice.value })), [
     { name: '管理通知', value: 'management' },
     { name: '子區通知', value: 'subarea' },
   ]);
   assert.equal(getCommand('config').default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
+  const shortcut = getCommand('notifications');
+  assert.equal(shortcut.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
+  assert.deepEqual(shortcut.contexts, [InteractionContextType.Guild]);
+  const directKind = getOption('notifications', 'kind');
+  assert.ok(directKind.type === ApplicationCommandOptionType.String);
+  assert.notEqual(directKind.required, true, 'the direct shortcut also opens its card without arguments');
+  assert.deepEqual(directKind.choices, kind.choices);
 });
 
 test('punishment configuration supports explicit notices, DMs and actual thread destinations', () => {
