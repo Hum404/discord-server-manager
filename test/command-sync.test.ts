@@ -372,6 +372,88 @@ test('command snapshots retain all API fields and default an omitted type to sla
   assert.equal(Object.hasOwn(raw, 'type'), false);
 });
 
+test('command reads explicitly request all localizations in both scopes and retain their metadata', async () => {
+  const raw = { ...command(1, 'help'), name_localizations: { 'zh-TW': '說明', 'zh-CN': '帮助' },
+    name_localized: '說明', description_localizations: { 'zh-TW': '指令說明' } };
+  const routes: string[] = [];
+  const rest: Pick<REST, 'get'> = { get: async (route, options) => {
+    routes.push(route);
+    assert.ok(options?.query instanceof URLSearchParams);
+    assert.equal(options.query.get('with_localizations'), 'true');
+    return route === globalRoute ? [raw] : [];
+  } };
+  assert.deepEqual(await readCommandState(rest, appId, guildId), { global: [raw], guild: [] });
+  assert.deepEqual(routes.sort(), [globalRoute, guildRoute].sort());
+});
+
+test('verification rejects missing or stale Chinese labels throughout registered command schemas', async () => {
+  const changes: Array<(entries: SavedCommand[]) => void> = [
+    (entries) => { delete namedCommand(entries, 'subarea').name_localizations; },
+    (entries) => { namedCommand(entries, 'help').description_localizations = { 'zh-CN': '过期的说明' }; },
+    (entries) => { delete namedOption(namedCommand(entries, 'subarea'), 'delegate').name_localizations; },
+    (entries) => { delete namedOption(namedOption(namedCommand(entries, 'subarea'), 'delegate'), 'user').name_localizations; },
+    (entries) => { namedOption(namedOption(namedCommand(entries, 'subarea'), 'mute'), 'reason')
+      .description_localizations = { 'zh-CN': '过期的原因说明' }; },
+    (entries) => {
+      const choices = namedOption(namedOption(namedCommand(entries, 'subarea'), 'create'), 'type').choices;
+      assert.ok(Array.isArray(choices));
+      (choices[0] as Record<string, unknown>).name_localizations = { 'zh-CN': '过期的选项名称' };
+    },
+    (entries) => { delete namedCommand(entries, MESSAGE_APP_DELETE_NAME).name_localizations; },
+  ];
+  for (const guildOnly of [false, true]) {
+    for (const change of changes) {
+      const initial: CommandState = { global: [], guild: [] };
+      const { rest } = mockState(initial);
+      const active = currentCommands(guildOnly);
+      change(active);
+      rest.get = async (route) => route === globalRoute ? guildOnly ? [] : active : guildOnly ? active : [];
+      await assert.rejects(syncCommandState(rest, appId, guildId, initial, guildOnly), ConfigError);
+    }
+  }
+});
+
+test('localization map key order and API selected display labels do not change command identity', async () => {
+  function reorder(node: Record<string, unknown>): void {
+    for (const field of ['name_localizations', 'description_localizations']) {
+      const value = node[field];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        node[field] = Object.fromEntries(Object.entries(value).reverse());
+      } else if (value === undefined) node[field] = null;
+    }
+    node.name_localized = '仅用于当前界面的名字';
+    node.description_localized = '僅用於目前介面的說明';
+    if (Array.isArray(node.options)) for (const option of node.options) reorder(option as Record<string, unknown>);
+    if (Array.isArray(node.choices)) for (const choice of node.choices) reorder(choice as Record<string, unknown>);
+  }
+  for (const guildOnly of [false, true]) {
+    const initial: CommandState = { global: currentCommands(), guild: [] };
+    for (const entry of initial.global) reorder(entry);
+    const { rest, calls } = mockState(initial);
+    const active = currentCommands(guildOnly);
+    for (const entry of active) reorder(entry);
+    rest.get = async (route) => route === globalRoute ? guildOnly ? initial.global : active : guildOnly ? active : [];
+    assert.equal((await syncCommandState(rest, appId, guildId, initial, guildOnly)).registered, allCommands.length);
+    assert.equal(calls.some((entry) => entry.method === 'DELETE'), false,
+      'localized display labels must not be treated as stale canonical command names');
+  }
+});
+
+test('malformed returned localization maps cannot pass schema verification', async () => {
+  for (const invalid of [[], 'invalid', 3, { 'zh-CN': null }, { 'zh-TW': 42 }]) {
+    const initial: CommandState = { global: [], guild: [] };
+    const { rest } = mockState(initial);
+    const active = currentCommands();
+    namedCommand(active, 'subarea').name_localizations = invalid;
+    rest.get = async (route) => route === globalRoute ? active : [];
+    await assert.rejects(syncCommandState(rest, appId, guildId, initial, false), (error: unknown) => {
+      assert.ok(error instanceof ConfigError);
+      assert.match(error.message, /舊程式/);
+      return true;
+    });
+  }
+});
+
 test('malformed or duplicate command snapshots are rejected before mutations', async () => {
   const invalidLists: unknown[] = [
     null, {}, [null], [{ id: idAt(1), name: '' }], [{ id: 'invalid', name: 'old' }],

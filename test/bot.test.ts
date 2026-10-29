@@ -17,7 +17,7 @@ const fullPermissions = [
 
 type Confirmation = 'confirm' | 'cancel' | 'timeout';
 type MemberStub = { id: string; permissions: PermissionsBitField };
-type Reply = { content?: string; embeds?: { toJSON(): { description?: string; footer?: { text: string } } }[] };
+type Reply = { content?: string; embeds?: { toJSON(): { description?: string; footer?: { text: string }; fields?: Array<{ name: string; value: string }> } }[] };
 
 /** Stub only Discord's transport boundary; real permission checks and SQLite run. */
 function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
@@ -136,6 +136,42 @@ test('warn rejects an actor without permission before writing a warning or case'
     assert.equal(store.countWarnings(ids.guild, ids.target), 0);
     assert.deepEqual(store.listCases(ids.guild), []);
     assert.equal(f.counters.targetRefreshes, 0);
+    assert.match(f.finalReply().content ?? '', /沒有.*權限/);
+  } finally { store.close(); }
+});
+
+test('help displays command references in the Discord client language', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (const [locale, delegate, settings] of [
+      ['zh-TW', '/子區 設定協管', '/設定 子區通知'],
+      ['zh-CN', '/子区 设置协管', '/设置 子区通知'],
+      ['en-US', '/subarea delegate', '/config subarea-notices'],
+    ]) {
+      const f = fixture('help');
+      Object.assign(f.interaction, { locale });
+      await handleInteraction(f.interaction, store);
+      const text = f.finalReply().embeds?.[0]?.toJSON().fields?.map((field) => field.value).join('\n') ?? '';
+      assert.ok(text.includes(delegate!));
+      assert.ok(text.includes(settings!));
+      if (locale !== 'en-US') assert.doesNotMatch(text, /\/(?:subarea|config|access|admin|appeal|records)\b/);
+      assert.equal(f.counters.actorRefreshes, 0);
+    }
+    assert.deepEqual(store.listCases(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('localized Discord command presentation retains canonical moderation routing and checks', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('warn');
+    Object.assign(f.interaction, { locale: 'zh-CN' });
+    await handleInteraction(f.interaction, store);
+    assert.equal(store.listCases(ids.guild)[0]?.action, 'warn');
+    assert.equal(store.countWarnings(ids.guild, ids.target), 1);
+    f.actor.permissions.remove(PermissionFlagsBits.ModerateMembers);
+    await handleInteraction(f.interaction, store);
+    assert.equal(store.countWarnings(ids.guild, ids.target), 1);
     assert.match(f.finalReply().content ?? '', /沒有.*權限/);
   } finally { store.close(); }
 });

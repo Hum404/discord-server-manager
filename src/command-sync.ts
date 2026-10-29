@@ -52,18 +52,29 @@ function numericList(value: unknown): number[] {
   return [...values].sort((left, right) => left - right);
 }
 
+function localizationMap(value: unknown): Record<string, string> {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value) || !Object.values(value).every((entry) => typeof entry === 'string')) {
+    throw new ConfigError(verificationError);
+  }
+  return Object.fromEntries(Object.keys(value).sort().map((locale) => [locale, value[locale] as string]));
+}
+
 function optionDefinition(value: unknown): unknown {
   if (!isRecord(value)) throw new ConfigError(verificationError);
   return {
     type: value.type,
     name: value.name,
+    name_localizations: localizationMap(value.name_localizations),
     description: value.description ?? '',
+    description_localizations: localizationMap(value.description_localizations),
     required: value.required ?? false,
     autocomplete: value.autocomplete ?? false,
     options: optionalList(value.options).map(optionDefinition),
     choices: optionalList(value.choices).map((choice) => {
       if (!isRecord(choice)) throw new ConfigError(verificationError);
-      return { name: choice.name, value: choice.value };
+      return { name: choice.name, value: choice.value,
+        name_localizations: localizationMap(choice.name_localizations) };
     }),
     channel_types: numericList(value.channel_types),
     min_value: value.min_value ?? null,
@@ -79,7 +90,9 @@ function commandDefinition(value: Record<string, unknown>, guildOnly: boolean): 
   return JSON.stringify({
     type: value.type ?? 1,
     name: value.name,
+    name_localizations: localizationMap(value.name_localizations),
     description: value.description ?? '',
+    description_localizations: localizationMap(value.description_localizations),
     options: optionalList(value.options).map(optionDefinition),
     default_member_permissions: value.default_member_permissions == null
       ? null : String(value.default_member_permissions),
@@ -157,8 +170,8 @@ export async function readCommandState(
   assertId(appId);
   assertId(guildId);
   const [global, guild] = await Promise.all([
-    rest.get(Routes.applicationCommands(appId)),
-    rest.get(Routes.applicationGuildCommands(appId, guildId)),
+    rest.get(Routes.applicationCommands(appId), { query: new URLSearchParams({ with_localizations: 'true' }) }),
+    rest.get(Routes.applicationGuildCommands(appId, guildId), { query: new URLSearchParams({ with_localizations: 'true' }) }),
   ]);
   return { global: validateCommands(global), guild: validateCommands(guild) };
 }

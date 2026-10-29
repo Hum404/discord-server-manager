@@ -8,6 +8,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import { MANAGEMENT_SCOPES, SCOPE_LABELS, scopeForCommand } from './domain.js';
+import { localizeMessageCommand, localizeSlashCommand } from './command-localizations.js';
 
 const commandPermissions: Record<string, bigint> = {
   warn: PermissionFlagsBits.ModerateMembers,
@@ -477,5 +478,8 @@ export const messageCommands = [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME].m
     .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
     .setDefaultMemberPermissions(null),
 );
+
+for (const builder of commands) localizeSlashCommand(builder);
+for (const builder of messageCommands) localizeMessageCommand(builder);
 
 export const allCommands = [...commands, ...messageCommands];

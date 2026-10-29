@@ -19,6 +19,7 @@ import { handleAdminCommand } from './admin.js';
 import { handleMessageAppCommand } from './message-apps.js';
 import { handleRecordsCommand } from './records.js';
 import { handlePunishmentConfig, handleSubareaNoticeConfig } from './punishment-config.js';
+import { localizeCommandReferences } from './command-localizations.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -223,18 +224,22 @@ async function configure(command: Command, context: Context, store: Store): Prom
 
 async function run(command: Command, store: Store): Promise<void> {
   if (command.commandName === 'help') {
-    await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器管理助手')
+    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器管理助手')
       .setDescription('以 Slash 指令管理伺服器。管理操作會檢查權限與角色階級，並留下案件紀錄。')
       .addFields(
         { name: '一般', value: '`/help` 指令說明\n`/ping` 連線狀態\n長按／右鍵訊息 → APP → 標註／取消標註、刪除訊息' },
         { name: '成員管理', value: '`/warn` 新增警告\n`/warnings` 最近 10 筆警告\n`/timeout` 禁言（最長 28 天）\n`/untimeout` 解除禁言\n`/kick` 踢出\n`/ban` 封鎖\n`/unban` 以 ID 解除封鎖' },
         { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config punishments` 伺服器處罰公告及私訊\n`/config subarea-notices` 子區內通知開關（預設開啟）\n`/config punishment-test` 測試處罰公告\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
-        { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`unpin` 建立者置頂訊息\n`/subarea mute`、`kick` 管理區內成員\n`/subarea delegate`、`undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
-        { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`role-tag`、`announce` 建立者提及通知' },
-        { name: '紀錄與管理員工具', value: '`/records` 查看自己的成員操作紀錄\n`/records direction:received` 查看收到的子區操作\n`/admin cases`、`case` 伺服器處罰案件\n`/admin warning-remove` 撤銷警告紀錄\n`/admin role-add`、`role-remove` 管理身分組\n`/admin channel-edit` 編輯文字頻道' },
+        { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`/subarea unpin` 建立者置頂訊息\n`/subarea mute`、`/subarea kick` 管理區內成員\n`/subarea delegate`、`/subarea undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
+        { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`/subarea unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`/subarea role-tag`、`/subarea announce` 建立者提及通知' },
+        { name: '紀錄與管理員工具', value: '`/records` 查看自己的紀錄，可選擇執行或收到的操作\n`/admin cases`、`/admin case` 伺服器處罰案件\n`/admin warning-remove` 撤銷警告紀錄\n`/admin role-add`、`/admin role-remove` 管理身分組\n`/admin channel-edit` 編輯文字頻道' },
         { name: '使用提醒', value: '踢出、封鎖、清理訊息須在 30 秒內確認。歡迎內容支援 `{user}`、`{server}`、`{count}`。設定頻道時留空可停用。' },
-      )] });
+      );
+    embed.setFields((embed.data.fields ?? []).map((field) => ({
+      ...field, value: localizeCommandReferences(field.value, command.locale),
+    })));
+    await command.editReply({ embeds: [embed] });
     return;
   }
   if (command.commandName === 'ping') {
