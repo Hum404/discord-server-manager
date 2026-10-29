@@ -4,7 +4,7 @@ import {
   ChannelType, PermissionFlagsBits as P, PermissionsBitField,
   type ChatInputCommandInteraction, type EmbedBuilder,
 } from 'discord.js';
-import { handlePunishmentConfig, parsePunishmentChannel } from '../src/punishment-config.js';
+import { handlePunishmentConfig, handleSubareaNoticeConfig, parsePunishmentChannel } from '../src/punishment-config.js';
 import { Store } from '../src/store.js';
 
 const id = {
@@ -255,4 +255,86 @@ test('disabled test delivery cannot send to either a saved target or invoking ch
   const f = fixture(); f.state.subcommand = 'punishment-test';
   await assert.rejects(handlePunishmentConfig(f.command, store), /尚未啟用/);
   assert.deepEqual(f.fetched, []); assert.deepEqual(f.sent, []); assert.deepEqual(store.listCases(id.guild), []);
+}));
+
+test('local child-area notice settings are enabled by default and can be viewed without writes or a destination', withStore(async (store) => {
+  const f = fixture(); f.state.subcommand = 'subarea-notices';
+  store.updateSettings(id.otherGuild, { subareaNoticesEnabled: false, punishmentChannelId: id.alternate });
+  await handleSubareaNoticeConfig(f.command, store);
+  assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, true);
+  assert.match(f.output(), /子區/); assert.match(f.output(), /開啟|啟用/);
+  assert.doesNotMatch(f.output(), new RegExp(id.alternate));
+  assert.deepEqual(f.replies[0]?.allowedMentions, { parse: [] });
+  assert.equal(f.replies.length, 1);
+  assert.equal(f.fetched.length, 0); assert.equal(f.sent.length, 0);
+  assert.deepEqual(store.listCases(id.guild), []);
+}));
+
+test('native managers, administrators and guild owners can toggle local notices without configuring server announcements', withStore(async (store) => {
+  for (const authority of ['manager', 'administrator', 'owner']) {
+    const f = fixture(); f.state.subcommand = 'subarea-notices'; f.state.enabled = false;
+    if (authority === 'administrator') f.actor.permissions = new PermissionsBitField(P.Administrator);
+    if (authority === 'owner') { f.actor.permissions = new PermissionsBitField(); f.guild.ownerId = id.actor; }
+    await handleSubareaNoticeConfig(f.command, store);
+    assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, false);
+    assert.equal(store.getSettings(id.guild).punishmentNoticesEnabled, false);
+    assert.equal(store.getSettings(id.guild).punishmentChannelId, null);
+    assert.equal(f.fetched.length, 0); assert.equal(f.sent.length, 0);
+    const entry = store.listCases(id.guild)[0]!;
+    assert.equal(entry.action, 'config'); assert.equal(entry.scope, 'member');
+    assert.equal(entry.moderatorId, id.actor);
+    f.state.enabled = true;
+    await handleSubareaNoticeConfig(f.command, store);
+    assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, true);
+  }
+}));
+
+test('local owners and delegated moderators cannot view or toggle the server-wide local notice switch', withStore(async (store) => {
+  for (const scope of ['warn', 'timeout', 'kick', 'ban', 'clear'] as const) store.setGrant(id.guild, id.actor, scope, id.owner);
+  store.setSubarea(id.guild, id.invocation, id.actor);
+  for (const enabled of [null, false]) {
+    const f = fixture(); f.state.subcommand = 'subarea-notices'; f.state.enabled = enabled;
+    f.actor.permissions = new PermissionsBitField();
+    await assert.rejects(handleSubareaNoticeConfig(f.command, store), /原生.*管理伺服器/);
+    assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, true);
+    assert.equal(f.replies.length, 0); assert.equal(f.sent.length, 0); assert.equal(f.fetched.length, 0);
+    assert.deepEqual(store.listCases(id.guild), []);
+  }
+}));
+
+test('local notice toggles refresh current native permissions before updating settings', withStore(async (store) => {
+  const f = fixture(); f.state.subcommand = 'subarea-notices'; f.state.enabled = false;
+  f.state.onMember = () => { f.actor.permissions.remove(P.ManageGuild); };
+  await assert.rejects(handleSubareaNoticeConfig(f.command, store), /原生.*管理伺服器/);
+  assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, true);
+  assert.equal(f.replies.length, 0); assert.equal(f.sent.length, 0); assert.equal(f.fetched.length, 0);
+  assert.deepEqual(store.listCases(id.guild), []);
+}));
+
+test('local toggles preserve server announcements, DMs and other guild settings even when the old target was deleted', withStore(async (store) => {
+  store.updateSettings(id.guild, { punishmentChannelId: id.notice, punishmentNoticesEnabled: true,
+    punishmentDmEnabled: false, punishmentIncludeSubareas: true, logChannelId: id.alternate });
+  store.updateSettings(id.otherGuild, { subareaNoticesEnabled: false, punishmentChannelId: id.alternate });
+  const before = store.getSettings(id.guild); const foreign = store.getSettings(id.otherGuild);
+  const f = fixture(); f.channels.clear(); f.state.subcommand = 'subarea-notices'; f.state.enabled = false;
+  await handleSubareaNoticeConfig(f.command, store);
+  assert.deepEqual(store.getSettings(id.guild), { ...before, subareaNoticesEnabled: false });
+  assert.deepEqual(store.getSettings(id.otherGuild), foreign);
+  assert.equal(f.fetched.length, 0); assert.equal(f.sent.length, 0);
+}));
+
+test('legacy include-subareas command aliases the local switch without requiring or enabling a server announcement target', withStore(async (store) => {
+  store.updateSettings(id.guild, { punishmentIncludeSubareas: true });
+  const f = fixture(); f.state.includeSubareas = false;
+  await handlePunishmentConfig(f.command, store);
+  assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, false);
+  assert.equal(store.getSettings(id.guild).punishmentIncludeSubareas, true, 'the obsolete field does not determine the new default');
+  assert.equal(store.getSettings(id.guild).punishmentNoticesEnabled, false);
+  assert.equal(store.getSettings(id.guild).punishmentChannelId, null);
+  assert.equal(f.fetched.length, 0); assert.equal(f.sent.length, 0);
+  f.state.includeSubareas = true;
+  await handlePunishmentConfig(f.command, store);
+  assert.equal(store.getSettings(id.guild).subareaNoticesEnabled, true);
+  assert.equal(store.getSettings(id.guild).punishmentNoticesEnabled, false);
+  assert.equal(f.fetched.length, 0); assert.equal(f.sent.length, 0);
 }));

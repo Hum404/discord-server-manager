@@ -20,7 +20,7 @@ const subareaPunishments = new Set(['subarea-mute', 'subarea-unmute', 'subarea-k
 const subareaManagement = new Set([
   'subarea-create', 'subarea-assign', 'subarea-delegate', 'subarea-undelegate',
   'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
-  'subarea-rename', 'subarea-lock', 'subarea-unlock', 'subarea-delete',
+  'subarea-rename', 'subarea-lock', 'subarea-unlock',
 ]);
 const subareaActions = new Set([...subareaPunishments, ...subareaManagement]);
 const reversalActions = new Set(['untimeout', 'unban', 'warning-remove', 'subarea-unmute', 'subarea-unkick']);
@@ -73,8 +73,8 @@ export async function punishmentNoticeTarget(guild: Guild, channelId: string): P
 }
 
 function shouldSend(settings: GuildSettings, entry: ModerationCase): boolean {
-  return settings.punishmentNoticesEnabled && settings.punishmentChannelId !== null
-    && (serverActions.has(entry.action) || (settings.punishmentIncludeSubareas && subareaActions.has(entry.action)));
+  if (subareaActions.has(entry.action)) return settings.subareaNoticesEnabled;
+  return serverActions.has(entry.action) && settings.punishmentNoticesEnabled && settings.punishmentChannelId !== null;
 }
 
 /** Called only after the operation and its local case have both been saved. */
@@ -84,15 +84,19 @@ export async function deliverPunishmentNotice(
   const skipped = { sentChannelId: null, warning: '' };
   // Unrelated member operations must never consult or publish to notification settings.
   if ((!serverActions.has(entry.action) && !subareaActions.has(entry.action))
-    || (serverActions.has(entry.action) && entry.userId === null)) return skipped;
+    || (serverActions.has(entry.action) && entry.userId === null)
+    || (subareaActions.has(entry.action) && entry.channelId === null)) return skipped;
   try {
     if (entry.guildId !== command.guildId || command.guild.id !== command.guildId) {
       throw new UserError('處罰通知的伺服器不符。');
     }
     const settings = store.getSettings(command.guildId);
     if (!shouldSend(settings, entry)) return skipped;
-    const channel = await punishmentNoticeTarget(command.guild, settings.punishmentChannelId!);
     const local = subareaActions.has(entry.action);
+    // The persisted operation target remains authoritative during outside-channel recovery.
+    // Child notices never fall back to the configured server announcement destination.
+    const destinationId = local ? entry.channelId! : settings.punishmentChannelId!;
+    const channel = await punishmentNoticeTarget(command.guild, destinationId);
     const management = subareaManagement.has(entry.action);
     const embed = new EmbedBuilder()
       .setColor(management ? 0x5865f2 : reversalActions.has(entry.action) ? 0x23a55a : 0xf0b232)
@@ -116,9 +120,9 @@ export async function deliverPunishmentNotice(
         .setCustomId(`appeal:case:${entry.guildId}:${entry.caseNumber}:${entry.userId}`)
         .setLabel('提交申訴').setStyle(ButtonStyle.Primary)));
     }
-    // Fetches above yield to commands disabling notifications or changing their scope/target.
+    // Fetches above yield to commands disabling local notices or changing the server destination.
     const current = store.getSettings(command.guildId);
-    if (!shouldSend(current, entry) || current.punishmentChannelId !== settings.punishmentChannelId) return skipped;
+    if (!shouldSend(current, entry) || (!local && current.punishmentChannelId !== settings.punishmentChannelId)) return skipped;
     await channel.send({ embeds: [embed], components, allowedMentions: { parse: [] } });
     return { sentChannelId: channel.id, warning: '' };
   } catch (error) {

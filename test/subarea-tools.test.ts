@@ -21,6 +21,7 @@ function fixture(store: Store, action: string, thread = false) {
     failSet: false, failedSet: false, endpointDeleted: false, failNotice: false };
   const replies: Payload[] = [];
   const sent: Array<{ channelId: string; payload: Payload }> = [];
+  const fetchedChannels: string[] = [];
   const counters = { pin: 0, unpin: 0, deleteMessage: 0, deleteChannel: 0, set: 0, edits: 0, outsideWrites: 0 };
   const base = P.ViewChannel | P.ReadMessageHistory | P.SendMessages | P.SendMessagesInThreads | P.AddReactions | P.UseApplicationCommands;
   const members = new Map<string, { id: string; permissions: PermissionsBitField; user: { id: string; bot: boolean }; guild: { ownerId: string } }>();
@@ -69,8 +70,11 @@ function fixture(store: Store, action: string, thread = false) {
     async setRateLimitPerUser(seconds: number) { channel.rateLimitPerUser = seconds; counters.edits++; },
     async setName(name: string) { assert.equal(name, state.name); counters.edits++; },
     async edit(options: { locked: boolean; archived: boolean }) { channel.locked = options.locked; channel.archived = options.archived; counters.edits++; },
-    async delete() { counters.deleteChannel++; state.endpointDeleted = true; },
-    async send(payload: Payload) { sent.push({ channelId: id.channel, payload }); },
+    async delete() { counters.deleteChannel++; state.endpointDeleted = true; channels.delete(id.channel); },
+    async send(payload: Payload) {
+      if (state.failNotice) throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+      sent.push({ channelId: id.channel, payload });
+    },
   };
   const outsideCache = new Collection<string, Overwrite>();
   const outside = {
@@ -95,7 +99,7 @@ function fixture(store: Store, action: string, thread = false) {
     roles: { async fetch() {} }, members: {
       async fetch(options: { user: string }) { const result = members.get(options.user); assert.ok(result); return result; },
       async fetchMe() { return bot; },
-    }, channels: { async fetch(channelId: string) { state.onChannelFetch(channelId); return channels.get(channelId) ?? null; } } };
+    }, channels: { async fetch(channelId: string) { fetchedChannels.push(channelId); state.onChannelFetch(channelId); return channels.get(channelId) ?? null; } } };
   const command = {
     id: '400000000000000010', guild, guildId: id.guild, get channelId() { return state.invokingChannelId; },
     get user() { return { id: state.actorId }; },
@@ -118,7 +122,7 @@ function fixture(store: Store, action: string, thread = false) {
     },
   } as unknown as ChatInputCommandInteraction<'cached'>;
   store.setSubarea(id.guild, id.channel, id.actor);
-  return { state, counters, channel, outside, channels, guild, actor, bot, target, admin, command, replies, sent, cache, overwrite };
+  return { state, counters, channel, outside, channels, guild, actor, bot, target, admin, command, replies, sent, fetchedChannels, cache, overwrite };
 }
 function withStore(run: (store: Store) => Promise<void> | void) {
   return async () => { const store = new Store(':memory:'); try { await run(store); } finally { store.close(); } };
@@ -164,21 +168,24 @@ test('delegates may edit slowmode but cannot grant additional delegates', withSt
   f.state.action = 'delegate'; await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者或伺服器管理員/);
 }));
 
-function enableManagementNotices(store: Store) {
-  store.updateSettings(id.guild, { punishmentNoticesEnabled: true, punishmentIncludeSubareas: true,
+function configureSeparateServerDestinations(store: Store) {
+  store.updateSettings(id.guild, { punishmentNoticesEnabled: false, punishmentIncludeSubareas: false,
     punishmentChannelId: id.notice, logChannelId: id.log });
 }
 
 for (const thread of [false, true]) {
   const kind = thread ? 'thread' : 'text area';
-  test(`a ${kind} creator delegate grant and revocation announce the correct subject only to the configured destination`, withStore(async (store) => {
-    const f = fixture(store, 'delegate', thread); enableManagementNotices(store);
+  test(`a ${kind} creator delegate grant and revocation announce locally by default without enabling server announcements`, withStore(async (store) => {
+    const f = fixture(store, 'delegate', thread); configureSeparateServerDestinations(store);
     await handleSubareaTools(f.command, store);
     assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
     f.state.action = 'undelegate';
     await handleSubareaTools(f.command, store);
     assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target), null);
-    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.notice, id.notice]);
+    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.channel, id.channel]);
+    assert.equal(f.fetchedChannels.includes(id.notice), false);
+    assert.equal(f.fetchedChannels.includes(id.log), false);
+    assert.equal(f.actor.permissions.has(P.ManageGuild), false);
     for (const entry of f.sent) {
       const embed = entry.payload.embeds?.[0]?.toJSON();
       assert.match(embed?.title ?? '', /^子區管理通知/);
@@ -196,7 +203,7 @@ for (const thread of [false, true]) {
   }));
 
   test(`an unauthorized or failed ${kind} delegate change cannot produce a success announcement`, withStore(async (store) => {
-    const f = fixture(store, 'delegate', thread); enableManagementNotices(store);
+    const f = fixture(store, 'delegate', thread); configureSeparateServerDestinations(store);
     store.setSubareaDelegate(id.guild, id.channel, id.target, id.actor);
     f.state.actorId = id.target;
     await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者或伺服器管理員/);
@@ -208,12 +215,14 @@ for (const thread of [false, true]) {
   }));
 
   test(`${kind} pinning and confirmed message deletion notify without fabricating a target member`, withStore(async (store) => {
-    const f = fixture(store, 'pin', thread); enableManagementNotices(store);
+    const f = fixture(store, 'pin', thread); configureSeparateServerDestinations(store);
     await handleSubareaTools(f.command, store);
     f.state.action = 'delete-message';
     await handleSubareaTools(f.command, store);
     assert.equal(f.counters.pin, 1); assert.equal(f.counters.deleteMessage, 1);
-    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.notice, id.notice]);
+    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.channel, id.channel]);
+    assert.equal(f.fetchedChannels.includes(id.notice), false);
+    assert.equal(f.fetchedChannels.includes(id.log), false);
     for (const entry of f.sent) {
       const output = JSON.stringify(entry.payload.embeds?.[0]?.toJSON());
       assert.match(output, /子區管理通知/);
@@ -227,32 +236,41 @@ for (const thread of [false, true]) {
 }
 
 test('management notification failure preserves the successful delegate grant and member record', withStore(async (store) => {
-  const f = fixture(store, 'delegate'); enableManagementNotices(store); f.state.failNotice = true;
+  const f = fixture(store, 'delegate'); configureSeparateServerDestinations(store); f.state.failNotice = true;
   await handleSubareaTools(f.command, store);
   assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
   assert.equal(store.listMemberCases(id.guild, id.actor)[0]?.action, 'subarea-delegate');
   assert.deepEqual(store.listServerCases(id.guild), []);
-  assert.deepEqual(f.sent, [], 'failed configured destination must not fall back to the source or server log');
+  assert.deepEqual(f.sent, [], 'failed local delivery must not fall back to any configured destination or server log');
+  assert.equal(f.fetchedChannels.includes(id.notice), false);
+  assert.equal(f.fetchedChannels.includes(id.log), false);
   assert.match(f.replies.at(-1)?.content ?? '', /通知發送失敗/);
 }));
 
-test('child-area managers cannot bypass the server notice switches', withStore(async (store) => {
-  for (const patch of [{ punishmentNoticesEnabled: false }, { punishmentIncludeSubareas: false }]) {
-    const f = fixture(store, 'delegate'); enableManagementNotices(store); store.updateSettings(id.guild, patch);
-    await handleSubareaTools(f.command, store);
-    assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
-    assert.deepEqual(f.sent, []);
-  }
+test('child-area managers respect the independent local notice switch while server announcements remain enabled', withStore(async (store) => {
+  const f = fixture(store, 'delegate'); configureSeparateServerDestinations(store);
+  store.updateSettings(id.guild, { punishmentNoticesEnabled: true, punishmentIncludeSubareas: true, subareaNoticesEnabled: false });
+  await handleSubareaTools(f.command, store);
+  assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.fetchedChannels.includes(id.notice), false);
+  assert.equal(f.fetchedChannels.includes(id.log), false);
+  store.updateSettings(id.guild, { subareaNoticesEnabled: true, punishmentNoticesEnabled: false });
+  f.state.action = 'undelegate';
+  await handleSubareaTools(f.command, store);
+  assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.channel]);
   assert.equal(store.listMemberCases(id.guild, id.actor).length, 2);
   assert.deepEqual(store.listServerCases(id.guild), []);
 }));
 
 test('outside-channel locking announces the selected child area instead of the invoking channel', withStore(async (store) => {
-  const f = fixture(store, 'lock'); enableManagementNotices(store);
+  const f = fixture(store, 'lock'); configureSeparateServerDestinations(store);
   f.state.invokingChannelId = id.other; f.state.selectedChannelId = id.channel;
   await handleSubareaTools(f.command, store);
   assert.ok(store.getSubareaLock(id.guild, id.channel));
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0]?.channelId, id.notice);
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0]?.channelId, id.channel);
+  assert.equal(f.fetchedChannels.includes(id.notice), false);
+  assert.equal(f.fetchedChannels.includes(id.log), false);
   const output = JSON.stringify(f.sent[0]?.payload.embeds?.[0]?.toJSON());
   assert.match(output, /子區管理通知/);
   assert.match(output, new RegExp(`<#${id.channel}>`));
@@ -341,9 +359,13 @@ test('thread locking preserves an active owner interface without replacing paren
 }));
 
 test('deleting an area requires two confirmations and tolerates invalidated reply endpoint', withStore(async (store) => {
-  const f = fixture(store, 'delete'); await handleSubareaTools(f.command, store);
+  const f = fixture(store, 'delete'); configureSeparateServerDestinations(store); await handleSubareaTools(f.command, store);
   assert.equal(f.state.confirmationCount, 2); assert.equal(f.counters.deleteChannel, 1); assert.equal(store.getSubarea(id.guild, id.channel), null);
   assert.equal(store.listCases(id.guild)[0]?.action, 'subarea-delete');
+  assert.equal(store.listMemberCases(id.guild, id.actor)[0]?.channelId, id.channel);
+  assert.deepEqual(f.sent, [], 'a deleted area has no local destination and must not announce elsewhere');
+  assert.equal(f.fetchedChannels.includes(id.notice), false);
+  assert.equal(f.fetchedChannels.includes(id.log), false);
 }));
 
 test('owner change at final delete confirmation prevents deletion', withStore(async (store) => {

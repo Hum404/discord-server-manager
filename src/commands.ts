@@ -136,9 +136,9 @@ export const commands = [
         ),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('punishments').setDescription('設定處罰公告、私訊及子區管理通知；不填參數可查看目前設定')
+      subcommand.setName('punishments').setDescription('設定伺服器處罰公告與私訊；不填參數可查看目前設定')
         .addChannelOption((option) =>
-          option.setName('channel').setDescription('處罰及子區管理通知的文字頻道、討論串或論壇帖子；與 channel-id 擇一')
+          option.setName('channel').setDescription('伺服器處罰公告的文字頻道、討論串或論壇帖子；與 channel-id 擇一')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement,
               ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread),
         )
@@ -147,13 +147,19 @@ export const commands = [
             .setMinLength(17).setMaxLength(250),
         )
         .addBooleanOption((option) =>
-          option.setName('enabled').setDescription('開關處罰及子區管理公告；指定新頻道時預設開啟，關閉仍保留目標'),
+          option.setName('enabled').setDescription('開關伺服器處罰公告；指定新頻道時預設開啟，關閉仍保留目標'),
         )
         .addBooleanOption((option) =>
           option.setName('dm').setDescription('是否在處罰前私訊當事人及提供申訴入口；預設開啟'),
         )
         .addBooleanOption((option) =>
-          option.setName('include-subareas').setDescription('公告是否包含子區禁言、協管授權、置頂及其他子區管理操作；預設關閉'),
+          option.setName('include-subareas').setDescription('子區內通知開關的相容選項；預設開啟，亦可使用 /config subarea-notices'),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName('subarea-notices').setDescription('開關直接發送至子區內的管理通知；預設開啟，不填參數可查看')
+        .addBooleanOption((option) =>
+          option.setName('enabled').setDescription('是否在操作的子區內發送管理通知；僅影響本伺服器'),
         ),
     )
     .addSubcommand((subcommand) =>

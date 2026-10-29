@@ -35,6 +35,7 @@ test('migration preserves old settings/history and adds nullable feature setting
       guildId: 'guild-a', logChannelId: 'old-log', welcomeChannelId: 'old-welcome',
       welcomeMessage: '原本的歡迎內容', appealChannelId: null, subareaCategoryId: null, subareaForumId: null,
       punishmentChannelId: null, punishmentNoticesEnabled: false, punishmentDmEnabled: true, punishmentIncludeSubareas: false,
+      subareaNoticesEnabled: true,
     });
     assert.equal(store.getCase(1)?.reason, '舊警告');
     store.updateSettings('guild-a', { appealChannelId: 'appeals', subareaCategoryId: 'areas' });

@@ -13,9 +13,9 @@ export function punishmentSettingsEmbed(settings: GuildSettings): EmbedBuilder {
       { name: '處罰公告', value: settings.punishmentNoticesEnabled ? '已啟用' : '已停用', inline: true },
       { name: '公告子區／頻道', value: settings.punishmentChannelId ? `<#${settings.punishmentChannelId}>` : '尚未設定', inline: true },
       { name: '處罰私訊與申訴入口', value: settings.punishmentDmEnabled ? '已啟用' : '已停用', inline: true },
-      { name: '公告範圍', value: settings.punishmentIncludeSubareas
-        ? '伺服器處罰及子區管理操作（禁言、移除、協管、置頂、鎖區等）' : '僅伺服器處罰及解除處罰' },
-    ).setFooter({ text: '處罰公告、管理日誌與成員紀錄分別設定；只影響此伺服器。' });
+      { name: '公告範圍', value: '僅伺服器處罰及解除處罰' },
+      { name: '子區內管理通知', value: settings.subareaNoticesEnabled ? '已開啟；直接發送至操作的子區' : '已關閉' },
+    ).setFooter({ text: '子區內通知預設開啟，由 /config subarea-notices 獨立設定。' });
 }
 
 /** Threads absent from the picker can be selected by their channel ID or same-guild URL. */
@@ -36,7 +36,7 @@ async function requireManager(command: Command): Promise<void> {
   await command.guild.roles.fetch();
   const actor = await command.guild.members.fetch({ user: command.user.id, force: true });
   if (actor.id !== command.guild.ownerId && !actor.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    throw new UserError('只有具備原生「管理伺服器」權限的管理員可以設定或測試處罰通知。');
+    throw new UserError('只有具備原生「管理伺服器」權限的管理員可以設定或測試管理通知。');
   }
 }
 
@@ -44,7 +44,19 @@ function unchanged(left: GuildSettings, right: GuildSettings): boolean {
   return left.punishmentChannelId === right.punishmentChannelId
     && left.punishmentNoticesEnabled === right.punishmentNoticesEnabled
     && left.punishmentDmEnabled === right.punishmentDmEnabled
-    && left.punishmentIncludeSubareas === right.punishmentIncludeSubareas;
+    && left.subareaNoticesEnabled === right.subareaNoticesEnabled;
+}
+
+/** Local notifications have their own switch and never require an announcement destination. */
+export async function handleSubareaNoticeConfig(command: Command, store: Store): Promise<void> {
+  await requireManager(command);
+  const enabled = command.options.getBoolean('enabled');
+  const settings = enabled === null ? store.getSettings(command.guildId)
+    : store.updateSettings(command.guildId, { subareaNoticesEnabled: enabled });
+  const detail = `子區內管理通知已${settings.subareaNoticesEnabled ? '開啟' : '關閉'}。`;
+  const suffix = enabled === null ? '' : await record(command, store, 'config', null, detail);
+  await command.editReply({ content: detail + '\n通知直接發送至操作的子區；此開關只影響本伺服器。' + suffix,
+    allowedMentions: noMentions });
 }
 
 /** Called after the root interaction handler has deferred an ephemeral reply. */
@@ -94,10 +106,10 @@ export async function handlePunishmentConfig(command: Command, store: Store): Pr
     ...(suppliedChannel === null ? {} : { punishmentChannelId: suppliedChannel }),
     ...(enabled === null && suppliedChannel === null ? {} : { punishmentNoticesEnabled: noticesEnabled }),
     ...(dm === null ? {} : { punishmentDmEnabled: dm }),
-    ...(includeSubareas === null ? {} : { punishmentIncludeSubareas: includeSubareas }),
+    ...(includeSubareas === null ? {} : { subareaNoticesEnabled: includeSubareas }),
   });
   const suffix = await record(command, store, 'config', null, '更新處罰通知設定',
-    `公告 ${settings.punishmentNoticesEnabled ? '啟用' : '停用'}；目標 ${settings.punishmentChannelId ?? '未設定'}；私訊 ${settings.punishmentDmEnabled ? '啟用' : '停用'}；子區管理通知 ${settings.punishmentIncludeSubareas ? '包含' : '不包含'}`);
+    `公告 ${settings.punishmentNoticesEnabled ? '啟用' : '停用'}；目標 ${settings.punishmentChannelId ?? '未設定'}；私訊 ${settings.punishmentDmEnabled ? '啟用' : '停用'}；子區內管理通知 ${settings.subareaNoticesEnabled ? '開啟' : '關閉'}`);
   await command.editReply({ content: `已更新本伺服器的處罰通知設定。${suffix}`,
     embeds: [punishmentSettingsEmbed(settings)], allowedMentions: noMentions });
 }

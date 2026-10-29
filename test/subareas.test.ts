@@ -258,11 +258,13 @@ test('native administrators can moderate but cannot use creator-only tag command
     f.actor.permissions.add(PermissionFlagsBits.Administrator);
     await f.run();
     assert.equal(f.counters.edits, 1);
+    assert.equal(f.sent.length, 1, 'successful local moderation emits its default notification');
+    assert.deepEqual(f.sent[0]?.allowedMentions, { parse: [] });
     for (const action of ['tag', 'role-tag', 'announce']) {
       f.state.action = action;
       await assert.rejects(f.run(), /只有目前子區的建立者/);
     }
-    assert.equal(f.sent.length, 0);
+    assert.equal(f.sent.length, 1, 'rejected mention commands add no notifications');
   } finally { store.close(); }
 });
 
@@ -409,7 +411,7 @@ test('reconciliation completes a saved removal after a crash and clears its dura
   } finally { store.close(); }
 });
 
-test('local delegates can moderate within their assigned area but cannot pin, notify or re-delegate', async () => {
+test('local delegates can moderate but cannot pin, send mention notices or re-delegate', async () => {
   const store = new Store(':memory:');
   try {
     const f = fixture(store, 'mute');
@@ -418,11 +420,13 @@ test('local delegates can moderate within their assigned area but cannot pin, no
     f.target.roles.highest.position = 10;
     await f.run();
     assert.equal(store.getSubareaRestriction(ids.guild, ids.channel, ids.target)?.muted, true);
+    assert.equal(f.sent.length, 1, 'successful local moderation emits its default notification');
+    assert.deepEqual(f.sent[0]?.allowedMentions, { parse: [] });
     for (const action of ['pin', 'unpin', 'tag', 'role-tag', 'announce', 'delegate', 'delete']) {
       f.state.action = action;
       await assert.rejects(f.run(), /只有/);
     }
-    assert.equal(f.sent.length, 0);
+    assert.equal(f.sent.length, 1, 'rejected management commands add no notifications');
     assert.equal(f.counters.kicks, 0);
     assert.equal(f.counters.timeouts, 0);
   } finally { store.close(); }

@@ -18,7 +18,7 @@ import { assertPrivateAppealChannel } from './appeal-privacy.js';
 import { handleAdminCommand } from './admin.js';
 import { handleMessageAppCommand } from './message-apps.js';
 import { handleRecordsCommand } from './records.js';
-import { handlePunishmentConfig } from './punishment-config.js';
+import { handlePunishmentConfig, handleSubareaNoticeConfig } from './punishment-config.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -139,6 +139,7 @@ function textChannel(channel: GuildBasedChannel | null): TextChannel | NewsChann
 
 async function configure(command: Command, context: Context, store: Store): Promise<void> {
   const subcommand = command.options.getSubcommand();
+  if (subcommand === 'subarea-notices') return handleSubareaNoticeConfig(command, store);
   if (subcommand === 'punishments' || subcommand === 'punishment-test') {
     return handlePunishmentConfig(command, store);
   }
@@ -148,7 +149,8 @@ async function configure(command: Command, context: Context, store: Store): Prom
       .addFields(
         { name: '管理紀錄頻道', value: settings.logChannelId ? `<#${settings.logChannelId}>` : '未啟用' },
         { name: '處罰公告', value: `${settings.punishmentNoticesEnabled ? '已啟用' : '已停用'}${settings.punishmentChannelId ? ` · <#${settings.punishmentChannelId}>` : ' · 尚未設定子區'}` },
-        { name: '管理通知範圍', value: `${settings.punishmentIncludeSubareas ? '包含子區管理操作' : '僅伺服器處罰'}；處罰私訊${settings.punishmentDmEnabled ? '開啟' : '關閉'}` },
+        { name: '子區內管理通知', value: settings.subareaNoticesEnabled ? '已開啟；通知直接發送至操作的子區' : '已關閉' },
+        { name: '處罰私訊', value: settings.punishmentDmEnabled ? '已開啟' : '已關閉' },
         { name: '歡迎頻道', value: settings.welcomeChannelId ? `<#${settings.welcomeChannelId}>` : '未啟用' },
         { name: '申訴工單頻道', value: settings.appealChannelId ? `<#${settings.appealChannelId}>` : '未設定；可用 /appeal queue 查看' },
         { name: '子區分類', value: settings.subareaCategoryId ? `<#${settings.subareaCategoryId}>` : '未啟用子區建立' },
@@ -226,7 +228,7 @@ async function run(command: Command, store: Store): Promise<void> {
       .addFields(
         { name: '一般', value: '`/help` 指令說明\n`/ping` 連線狀態\n長按／右鍵訊息 → APP → 標註／取消標註、刪除訊息' },
         { name: '成員管理', value: '`/warn` 新增警告\n`/warnings` 最近 10 筆警告\n`/timeout` 禁言（最長 28 天）\n`/untimeout` 解除禁言\n`/kick` 踢出\n`/ban` 封鎖\n`/unban` 以 ID 解除封鎖' },
-        { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config punishments` 處罰公告子區、開關及私訊\n`/config punishment-test` 測試公告\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
+        { name: '頻道與設定', value: '`/clear` 清理最近訊息（最多 100 則）\n`/config view` 查看設定\n`/config logs` 管理紀錄頻道\n`/config punishments` 伺服器處罰公告及私訊\n`/config subarea-notices` 子區內通知開關（預設開啟）\n`/config punishment-test` 測試處罰公告\n`/config welcome` 歡迎頻道\n`/config welcome-message` 歡迎內容' },
         { name: '授權與申訴', value: '`/access grant` 授權管理功能\n`/access revoke` 撤回授權\n`/appeal submit` 提交申訴\n`/appeal status` 查詢工單\n`/appeal queue` 管理員工單清單\n`/appeal review` 審核工單' },
         { name: '子區管理', value: '`/config subareas` 設定分類／論壇\n`/subarea create` 建立文字頻道／討論串／論壇帖子\n`/subarea pin`、`unpin` 建立者置頂訊息\n`/subarea mute`、`kick` 管理區內成員\n`/subarea delegate`、`undelegate` 授權協管\n`/subarea info` 查看狀態與管理者' },
         { name: '子區工具', value: '`/subarea delete-message` 刪除指定訊息\n`/subarea slowmode` 慢速模式\n`/subarea rename` 修改名稱\n`/subarea lock`、`unlock` 鎖定／解鎖\n`/subarea delete` 建立者刪區（兩次確認）\n`/subarea tag`、`role-tag`、`announce` 建立者提及通知' },

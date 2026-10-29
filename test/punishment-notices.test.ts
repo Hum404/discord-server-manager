@@ -5,7 +5,7 @@ import {
   type ChatInputCommandInteraction, type EmbedBuilder, type Guild,
 } from 'discord.js';
 import { record } from '../src/audit.js';
-import { punishmentNoticeTarget } from '../src/punishment-notices.js';
+import { deliverPunishmentNotice, punishmentNoticeTarget } from '../src/punishment-notices.js';
 import { Store } from '../src/store.js';
 
 const ids = {
@@ -131,46 +131,41 @@ test('all server sanctions and reversals notify while reversals omit the appeal 
   });
 });
 
-test('local punishments require explicit opt-in and remain member records even with server logging configured', async () => {
+test('local punishments notify their own area by default while server announcements remain disabled', async () => {
   await withStore(async (store) => {
     const f = fixture();
-    enable(store, { logChannelId: ids.log });
-    assert.equal(await record(f.command, store, 'subarea-mute', ids.target, 'Local'), '\n成員紀錄 #1');
-    assert.deepEqual(f.fetched, []);
-    store.updateSettings(ids.guild, { punishmentIncludeSubareas: true });
+    store.updateSettings(ids.guild, { logChannelId: ids.log, punishmentChannelId: ids.notice,
+      punishmentNoticesEnabled: false, punishmentIncludeSubareas: false });
     for (const action of ['subarea-mute', 'subarea-unmute', 'subarea-kick', 'subarea-unkick']) {
       await record(f.command, store, action, ids.target, 'Local', 'Local details', ids.source);
     }
     assert.equal(f.sent.length, 4);
-    assert.ok(f.sent.every((notice) => notice.channelId === ids.notice));
+    assert.ok(f.sent.every((notice) => notice.channelId === ids.source));
+    assert.ok(f.fetched.every((fetch) => fetch.id === ids.source));
     assert.equal(store.listServerCases(ids.guild).length, 0);
-    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 5);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 4);
     const fields = f.sent[0]!.payload.embeds[0]!.toJSON().fields;
-    assert.equal(fields?.find((field) => field.name === '成員紀錄編號')?.value, '#2');
+    assert.equal(fields?.find((field) => field.name === '成員紀錄編號')?.value, '#1');
     assert.equal(fields?.find((field) => field.name === '影響範圍')?.value, '僅指定子區');
     assert.equal(fields?.find((field) => field.name === '處罰子區')?.value, `<#${ids.source}>`);
+    assert.equal(f.sent[0]!.payload.components?.[0]?.toJSON().components[0]?.custom_id,
+      `appeal:case:${ids.guild}:1:${ids.target}`);
   });
 });
 
-test('management notices require explicit child-area opt-in and retain their private member-ledger scope', async () => {
+test('management notices default to the operated child area and retain member-ledger scope', async () => {
   await withStore(async (store) => {
     const f = fixture();
     enable(store, { logChannelId: ids.log });
     const actions = ['subarea-create', 'subarea-assign', 'subarea-delegate', 'subarea-undelegate',
       'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
-      'subarea-rename', 'subarea-lock', 'subarea-unlock', 'subarea-delete'];
+      'subarea-rename', 'subarea-lock', 'subarea-unlock'];
     for (const action of actions) {
-      await record(f.command, store, action, ids.target, 'Before opt-in', 'Selected child area', ids.source);
-    }
-    assert.equal(f.fetched.length, 0);
-    assert.equal(f.sent.length, 0);
-    store.updateSettings(ids.guild, { punishmentIncludeSubareas: true });
-    for (const action of actions) {
-      await record(f.command, store, action, ids.target, 'After opt-in', 'Selected child area', ids.source);
+      await record(f.command, store, action, ids.target, 'Completed action', 'Selected child area', ids.source);
     }
     assert.equal(f.sent.length, actions.length);
-    assert.ok(f.sent.every((notice) => notice.channelId === ids.notice));
-    assert.ok(f.fetched.every((fetch) => fetch.id === ids.notice), 'member operations never fetch the server-log destination');
+    assert.ok(f.sent.every((notice) => notice.channelId === ids.source));
+    assert.ok(f.fetched.every((fetch) => fetch.id === ids.source), 'child operations never fetch either configured server destination');
     for (const notice of f.sent) {
       const embed = notice.payload.embeds[0]!.toJSON();
       assert.match(embed.title ?? '', /^子區管理通知 · /);
@@ -180,7 +175,7 @@ test('management notices require explicit child-area opt-in and retain their pri
       assert.deepEqual(notice.payload.allowedMentions, { parse: [] });
     }
     assert.equal(store.listServerCases(ids.guild).length, 0);
-    assert.equal(store.listMemberCases(ids.guild, ids.actor, 'performed', 100).length, actions.length * 2);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor, 'performed', 100).length, actions.length);
   });
 });
 
@@ -194,6 +189,7 @@ test('delegation and revocation notices identify the acting manager, affected me
     }
     assert.equal(f.sent.length, 2);
     for (const notice of f.sent) {
+      assert.equal(notice.channelId, area, 'outside invocations notify the managed area, never the outside channel');
       const embed = notice.payload.embeds[0]!.toJSON();
       assert.match(embed.title ?? '', /^子區管理通知.*協管/);
       assert.equal(embed.fields?.find((field) => field.name === '執行者')?.value, `<@${ids.actor}>（${ids.actor}）`);
@@ -221,6 +217,7 @@ test('area and message tools with no member target still announce their selected
     }
     assert.equal(f.sent.length, actions.length);
     for (const notice of f.sent) {
+      assert.equal(notice.channelId, selected);
       const embed = notice.payload.embeds[0]!.toJSON();
       assert.match(embed.title ?? '', /^子區管理通知/);
       assert.ok(embed.fields?.some((field) => field.value === `<#${selected}>`));
@@ -230,16 +227,68 @@ test('area and message tools with no member target still announce their selected
   });
 });
 
-test('disabling all notices suppresses management delivery even when the child-area scope is enabled', async () => {
+test('disabling local notices suppresses management delivery independently of server announcements', async () => {
   await withStore(async (store) => {
     const f = fixture();
-    enable(store, { punishmentIncludeSubareas: true, punishmentNoticesEnabled: false });
+    enable(store, { punishmentIncludeSubareas: true, subareaNoticesEnabled: false });
     for (const [action, target] of [['subarea-delegate', ids.target], ['subarea-lock', null]] as const) {
       assert.doesNotMatch(await record(f.command, store, action, target, 'Keep only the ledger'), /失敗/);
     }
     assert.equal(f.fetched.length, 0);
     assert.equal(f.sent.length, 0);
     assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 2);
+    await record(f.command, store, 'warn', ids.target, 'Server notice remains enabled');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0]?.channelId, ids.notice);
+    assert.equal(store.listServerCases(ids.guild).length, 1);
+  });
+});
+
+test('deleted or missing child-area targets never send to the invoking or configured server channel', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log, punishmentIncludeSubareas: true });
+    assert.equal(await record(f.command, store, 'subarea-delete', ids.actor, 'Deleted area', 'Deleted metadata', ids.source), '\n成員紀錄 #1');
+    const missing = store.addCase({ guildId: ids.guild, action: 'subarea-lock', userId: null,
+      moderatorId: ids.actor, reason: 'No destination', channelId: null });
+    assert.deepEqual(await deliverPunishmentNotice(f.command, store, missing), { sentChannelId: null, warning: '' });
+    assert.deepEqual(f.fetched, []);
+    assert.deepEqual(f.sent, []);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 2);
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+  });
+});
+
+test('server announcement changes and old opt-in settings cannot cancel a local notification', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: false });
+    f.state.onFetch = () => store.updateSettings(ids.guild, {
+      punishmentNoticesEnabled: false, punishmentChannelId: ids.log, punishmentIncludeSubareas: false,
+    });
+    assert.equal(await record(f.command, store, 'subarea-delegate', ids.target, 'Independent local setting'), '\n成員紀錄 #1');
+    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.source]);
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0]?.channelId, ids.source);
+  });
+});
+
+test('invalid and inaccessible local destinations keep their cases without any fallback publication', async () => {
+  await withStore(async (store) => {
+    const setups = [
+      (f: ReturnType<typeof fixture>) => { f.state.targetGuild = ids.otherGuild; },
+      (f: ReturnType<typeof fixture>) => { f.state.type = ChannelType.PrivateThread; f.state.memberMissing = true; },
+      (f: ReturnType<typeof fixture>) => { f.state.type = ChannelType.PublicThread; f.state.archived = true; },
+    ];
+    enable(store, { logChannelId: ids.log });
+    for (const setup of setups) {
+      const f = fixture(); setup(f);
+      assert.match(await record(f.command, store, 'subarea-delegate', ids.target, 'Private child action'), /通知發送失敗/);
+      assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.source]);
+      assert.deepEqual(f.sent, []);
+    }
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, setups.length);
+    assert.equal(store.listServerCases(ids.guild).length, 0);
   });
 });
 
@@ -252,17 +301,17 @@ test('management delivery failure preserves its record and never falls back to t
     assert.match(result, /成員紀錄 #1/);
     assert.match(result, /通知.*失敗/);
     assert.equal(f.sent.length, 0);
-    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.notice]);
+    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.source]);
     assert.equal(store.getMemberCase(ids.guild, 1, ids.actor)?.action, 'subarea-delegate');
     assert.equal(store.listServerCases(ids.guild).length, 0);
   });
 });
 
-test('revoking child-area notification scope while fetching cancels a pending delegation notice', async () => {
+test('disabling child-area notifications while fetching cancels a pending delegation notice', async () => {
   await withStore(async (store) => {
     const f = fixture();
     enable(store, { punishmentIncludeSubareas: true });
-    f.state.onFetch = () => store.updateSettings(ids.guild, { punishmentIncludeSubareas: false });
+    f.state.onFetch = () => store.updateSettings(ids.guild, { subareaNoticesEnabled: false });
     assert.equal(await record(f.command, store, 'subarea-delegate', ids.target, '變更協管'), '\n成員紀錄 #1');
     assert.equal(f.sent.length, 0);
     assert.equal(store.listMemberCases(ids.guild, ids.actor)[0]?.action, 'subarea-delegate');
@@ -322,11 +371,11 @@ test('disabled or retargeted settings during fresh channel lookup cancel pending
   });
 });
 
-test('removing the local-punishment scope during lookup cancels a local notice without changing its record', async () => {
+test('disabling local notifications during lookup cancels a restriction notice without changing its record', async () => {
   await withStore(async (store) => {
     const f = fixture();
     enable(store, { punishmentIncludeSubareas: true });
-    f.state.onFetch = () => { store.updateSettings(ids.guild, { punishmentIncludeSubareas: false }); };
+    f.state.onFetch = () => { store.updateSettings(ids.guild, { subareaNoticesEnabled: false }); };
     assert.equal(await record(f.command, store, 'subarea-kick', ids.target, 'Scope changed'), '\n成員紀錄 #1');
     assert.deepEqual(f.sent, []);
     assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 1);
@@ -415,5 +464,21 @@ test('notification settings from another guild never activate notices in the inv
     assert.equal(await record(f.command, store, 'warn', ids.target, 'Isolated'), '\n本服案件 #1');
     assert.deepEqual(f.fetched, []);
     assert.deepEqual(f.sent, []);
+  });
+});
+
+test('each guild local-notice switch applies only to its own child areas', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    store.updateSettings(ids.otherGuild, { subareaNoticesEnabled: false });
+    await record(f.command, store, 'subarea-delegate', ids.target, 'This guild defaults on');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0]?.channelId, ids.source);
+    store.updateSettings(ids.guild, { subareaNoticesEnabled: false });
+    store.updateSettings(ids.otherGuild, { subareaNoticesEnabled: true });
+    await record(f.command, store, 'subarea-undelegate', ids.target, 'This guild is now disabled');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.fetched.length, 1);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 2);
   });
 });

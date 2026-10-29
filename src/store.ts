@@ -20,6 +20,7 @@ export interface GuildSettings {
   punishmentNoticesEnabled: boolean;
   punishmentDmEnabled: boolean;
   punishmentIncludeSubareas: boolean;
+  subareaNoticesEnabled: boolean;
 }
 
 export interface Warning {
@@ -106,7 +107,7 @@ export interface SubareaRestriction {
 }
 
 type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId' | 'subareaForumId'
-  | 'punishmentChannelId' | 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas'>>;
+  | 'punishmentChannelId' | 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas' | 'subareaNoticesEnabled'>>;
 type NewWarning = Pick<Warning, 'guildId' | 'userId' | 'moderatorId' | 'reason'>;
 type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & {
   details?: string; channelId?: string | null;
@@ -329,6 +330,7 @@ export class Store {
         ['punishment_notices_enabled', 'INTEGER NOT NULL DEFAULT 0 CHECK(punishment_notices_enabled IN (0, 1))'],
         ['punishment_dm_enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK(punishment_dm_enabled IN (0, 1))'],
         ['punishment_include_subareas', 'INTEGER NOT NULL DEFAULT 0 CHECK(punishment_include_subareas IN (0, 1))'],
+        ['subarea_notices_enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK(subarea_notices_enabled IN (0, 1))'],
       ] as const;
       for (const [column, definition] of punishmentColumns) {
         if (!settingsColumns.some((entry) => entry.name === column)) {
@@ -426,20 +428,23 @@ export class Store {
              subarea_forum_id AS subareaForumId, punishment_channel_id AS punishmentChannelId,
              punishment_notices_enabled AS punishmentNoticesEnabled,
              punishment_dm_enabled AS punishmentDmEnabled,
-             punishment_include_subareas AS punishmentIncludeSubareas
+             punishment_include_subareas AS punishmentIncludeSubareas,
+             subarea_notices_enabled AS subareaNoticesEnabled
       FROM guild_settings WHERE guild_id = ?
-    `).get(guildId) as unknown as (Omit<GuildSettings, 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas'> & {
-      punishmentNoticesEnabled: number; punishmentDmEnabled: number; punishmentIncludeSubareas: number;
+    `).get(guildId) as unknown as (Omit<GuildSettings, 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas' | 'subareaNoticesEnabled'> & {
+      punishmentNoticesEnabled: number; punishmentDmEnabled: number; punishmentIncludeSubareas: number; subareaNoticesEnabled: number;
     }) | undefined;
     return row ? {
       ...row, punishmentNoticesEnabled: row.punishmentNoticesEnabled === 1,
       punishmentDmEnabled: row.punishmentDmEnabled === 1,
       punishmentIncludeSubareas: row.punishmentIncludeSubareas === 1,
+      subareaNoticesEnabled: row.subareaNoticesEnabled === 1,
     } : {
       guildId, logChannelId: null, welcomeChannelId: null, welcomeMessage: DEFAULT_WELCOME_MESSAGE,
       appealChannelId: null, subareaCategoryId: null, subareaForumId: null,
       punishmentChannelId: null, punishmentNoticesEnabled: false,
       punishmentDmEnabled: true, punishmentIncludeSubareas: false,
+      subareaNoticesEnabled: true,
     };
   }
 
@@ -457,6 +462,7 @@ export class Store {
       punishmentNoticesEnabled: patch.punishmentNoticesEnabled === undefined ? current.punishmentNoticesEnabled : patch.punishmentNoticesEnabled,
       punishmentDmEnabled: patch.punishmentDmEnabled === undefined ? current.punishmentDmEnabled : patch.punishmentDmEnabled,
       punishmentIncludeSubareas: patch.punishmentIncludeSubareas === undefined ? current.punishmentIncludeSubareas : patch.punishmentIncludeSubareas,
+      subareaNoticesEnabled: patch.subareaNoticesEnabled === undefined ? current.subareaNoticesEnabled : patch.subareaNoticesEnabled,
     };
     if (settings.logChannelId !== null) identifier(settings.logChannelId);
     if (settings.welcomeChannelId !== null) identifier(settings.welcomeChannelId);
@@ -464,14 +470,14 @@ export class Store {
     if (settings.subareaCategoryId !== null) identifier(settings.subareaCategoryId);
     if (settings.subareaForumId !== null) identifier(settings.subareaForumId);
     if (settings.punishmentChannelId !== null) identifier(settings.punishmentChannelId);
-    for (const value of [settings.punishmentNoticesEnabled, settings.punishmentDmEnabled, settings.punishmentIncludeSubareas]) {
+    for (const value of [settings.punishmentNoticesEnabled, settings.punishmentDmEnabled, settings.punishmentIncludeSubareas, settings.subareaNoticesEnabled]) {
       if (typeof value !== 'boolean') throw new TypeError('Punishment notification switches must be booleans.');
     }
     requiredText(settings.welcomeMessage, 'Welcome message', 2000);
     this.db.prepare(`
       INSERT INTO guild_settings(guild_id, log_channel_id, welcome_channel_id, welcome_message, appeal_channel_id, subarea_category_id, subarea_forum_id,
-        punishment_channel_id, punishment_notices_enabled, punishment_dm_enabled, punishment_include_subareas)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        punishment_channel_id, punishment_notices_enabled, punishment_dm_enabled, punishment_include_subareas, subarea_notices_enabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(guild_id) DO UPDATE SET
         log_channel_id = excluded.log_channel_id,
         welcome_channel_id = excluded.welcome_channel_id,
@@ -482,10 +488,11 @@ export class Store {
         punishment_channel_id = excluded.punishment_channel_id,
         punishment_notices_enabled = excluded.punishment_notices_enabled,
         punishment_dm_enabled = excluded.punishment_dm_enabled,
-        punishment_include_subareas = excluded.punishment_include_subareas
+        punishment_include_subareas = excluded.punishment_include_subareas,
+        subarea_notices_enabled = excluded.subarea_notices_enabled
     `).run(guildId, settings.logChannelId, settings.welcomeChannelId, settings.welcomeMessage,
       settings.appealChannelId, settings.subareaCategoryId, settings.subareaForumId, settings.punishmentChannelId,
-      Number(settings.punishmentNoticesEnabled), Number(settings.punishmentDmEnabled), Number(settings.punishmentIncludeSubareas));
+      Number(settings.punishmentNoticesEnabled), Number(settings.punishmentDmEnabled), Number(settings.punishmentIncludeSubareas), Number(settings.subareaNoticesEnabled));
     return settings;
   }
 

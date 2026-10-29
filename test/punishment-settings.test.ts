@@ -22,7 +22,7 @@ test('new guilds retain existing punishment DMs and require opting into public a
     assert.deepEqual(notices(store, 'guild-a'), defaults);
     store.updateSettings('guild-a', { logChannelId: 'logs' });
     assert.deepEqual(notices(store, 'guild-a'), defaults);
-    for (const key of ['punishmentNoticesEnabled', 'punishmentDmEnabled', 'punishmentIncludeSubareas'] as const) {
+    for (const key of ['punishmentNoticesEnabled', 'punishmentDmEnabled', 'punishmentIncludeSubareas', 'subareaNoticesEnabled'] as const) {
       assert.equal(typeof store.getSettings('guild-a')[key], 'boolean');
     }
   } finally { store.close(); }
@@ -113,7 +113,7 @@ test('invalid punishment settings are rejected without changing any stored setti
   try {
     store.updateSettings('guild-a', { punishmentChannelId: 'existing', punishmentNoticesEnabled: true });
     const before = store.getSettings('guild-a');
-    for (const key of ['punishmentNoticesEnabled', 'punishmentDmEnabled', 'punishmentIncludeSubareas'] as const) {
+    for (const key of ['punishmentNoticesEnabled', 'punishmentDmEnabled', 'punishmentIncludeSubareas', 'subareaNoticesEnabled'] as const) {
       for (const invalid of [0, 1, 'false', 'true', '', null, {}, []]) {
         assert.throws(() => store.updateSettings('guild-a', { [key]: invalid } as unknown as Parameters<Store['updateSettings']>[1]), TypeError);
         assert.deepEqual(store.getSettings('guild-a'), before);
@@ -124,4 +124,83 @@ test('invalid punishment settings are rejected without changing any stored setti
       assert.deepEqual(store.getSettings('guild-a'), before);
     }
   } finally { store.close(); }
+});
+
+test('child-area notices default on independently of server announcement and legacy scope switches', () => {
+  const store = new Store(':memory:');
+  try {
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, true);
+    store.updateSettings('guild-a', {
+      punishmentChannelId: 'server-announcements', punishmentNoticesEnabled: false,
+      punishmentIncludeSubareas: false, punishmentDmEnabled: false,
+    });
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, true);
+    store.updateSettings('guild-a', { subareaNoticesEnabled: false });
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, false);
+    assert.equal(store.getSettings('guild-b').subareaNoticesEnabled, true);
+    store.updateSettings('guild-a', { punishmentNoticesEnabled: true, punishmentIncludeSubareas: true });
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, false);
+    assert.equal(store.getSettings('guild-a').punishmentChannelId, 'server-announcements');
+  } finally { store.close(); }
+});
+
+test('a saved disabled child-area notice switch survives restarts and unrelated sparse setting updates', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'discord-local-notice-settings-'));
+  const path = join(directory, 'bot.sqlite');
+  let store = new Store(path);
+  try {
+    store.updateSettings('guild-a', { subareaNoticesEnabled: false, punishmentChannelId: 'existing-post' });
+    store.close();
+    store = new Store(path);
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, false);
+    store.updateSettings('guild-a', { punishmentDmEnabled: false, subareaNoticesEnabled: undefined });
+    store.close();
+    store = new Store(path);
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, false);
+    assert.equal(store.getSettings('guild-a').punishmentChannelId, 'existing-post');
+    assert.equal(store.getSettings('guild-b').subareaNoticesEnabled, true);
+    store.updateSettings('guild-a', { subareaNoticesEnabled: true });
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, true);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('upgrading the configured-announcement schema enables local notices without inheriting its legacy false flag', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'discord-local-notice-migration-'));
+  const path = join(directory, 'old.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE guild_settings (
+      guild_id TEXT PRIMARY KEY, log_channel_id TEXT, welcome_channel_id TEXT,
+      welcome_message TEXT NOT NULL, appeal_channel_id TEXT,
+      subarea_category_id TEXT, subarea_forum_id TEXT, punishment_channel_id TEXT,
+      punishment_notices_enabled INTEGER NOT NULL DEFAULT 0,
+      punishment_dm_enabled INTEGER NOT NULL DEFAULT 1,
+      punishment_include_subareas INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO guild_settings VALUES ('guild-a', 'server-log', NULL, '歡迎 {user}',
+      NULL, NULL, NULL, 'old-announcements', 0, 1, 0);
+  `);
+  legacy.close();
+  let store = new Store(path);
+  try {
+    const migrated = store.getSettings('guild-a');
+    assert.equal(migrated.subareaNoticesEnabled, true);
+    assert.equal(migrated.punishmentIncludeSubareas, false);
+    assert.equal(migrated.punishmentNoticesEnabled, false);
+    assert.equal(migrated.punishmentChannelId, 'old-announcements');
+    assert.equal(migrated.logChannelId, 'server-log');
+    store.close();
+    store = new Store(path);
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, true);
+    store.updateSettings('guild-a', { subareaNoticesEnabled: false });
+    store.close();
+    store = new Store(path);
+    assert.equal(store.getSettings('guild-a').subareaNoticesEnabled, false);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -83,11 +83,11 @@ test('configured logs publish only to the invoking guild and display its local c
   });
 });
 
-test('outside-channel recovery privately records the selected target instead of the invocation channel', async () => {
+test('outside recovery with local notices disabled still records the selected target privately', async () => {
   await withStore(async (store) => {
     const a = fixture(ids.guildA, ids.channelA);
     const targetChannelId = '510000000000000007';
-    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA, subareaNoticesEnabled: false });
     const result = await record(a.command, store, 'subarea-unlock', null, '解除子區鎖定', `子區 ${targetChannelId}`, targetChannelId);
     assert.equal(result, '\n成員紀錄 #1');
     assert.deepEqual(a.fetched, []);
@@ -162,10 +162,10 @@ test('disabling the guild log while its channel is being fetched cancels the not
   });
 });
 
-test('every subarea operation is stored by actor without fetching or sending the configured server log', async () => {
+test('every subarea operation with local notices disabled stays private without a server-log fallback', async () => {
   await withStore(async (store) => {
     const a = fixture(ids.guildA, ids.channelA);
-    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA, subareaNoticesEnabled: false });
     a.state.failFetch = true;
     const actions = ['subarea-create', 'subarea-assign', 'subarea-mute', 'subarea-unmute', 'subarea-kick',
       'subarea-unkick', 'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',

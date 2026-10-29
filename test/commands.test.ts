@@ -144,7 +144,7 @@ test('Discord action options enforce timeout, deletion, and cleanup API limits',
 test('configuration permits only supported destination channels and bounded welcome text', () => {
   const config = getCommand('config');
   assert.deepEqual(config.options?.map((option) => option.name).sort(),
-    ['view', 'logs', 'punishments', 'punishment-test', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
+    ['view', 'logs', 'punishments', 'punishment-test', 'subarea-notices', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
   for (const name of ['logs', 'welcome']) {
     const subcommand = getOption('config', name);
     assert.ok(subcommand.type === ApplicationCommandOptionType.Subcommand);
@@ -193,6 +193,12 @@ test('punishment configuration supports explicit notices, DMs and actual thread 
   const testNotice = getOption('config', 'punishment-test');
   assert.ok(testNotice.type === ApplicationCommandOptionType.Subcommand);
   assert.equal(testNotice.options?.length ?? 0, 0, 'test notices use the configured destination');
+  const localNotices = getOption('config', 'subarea-notices');
+  assert.ok(localNotices.type === ApplicationCommandOptionType.Subcommand);
+  assert.deepEqual(localNotices.options?.map((option) => option.name), ['enabled'], 'local notices need no destination');
+  const localEnabled = getSubOption('config', 'subarea-notices', 'enabled');
+  assert.ok(localEnabled.type === ApplicationCommandOptionType.Boolean);
+  assert.notEqual(localEnabled.required, true, 'omitting the toggle shows local notification status');
 });
 
 test('access grants use bounded capabilities with an explicit all option and revocable targets', () => {
