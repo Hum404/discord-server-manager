@@ -356,7 +356,7 @@ async function moderateArea(command: Command, store: Store, action: RestrictionA
   target = await targetMember(command, current, registered.area, store);
   let notified = true;
   if (action === 'mute' || action === 'kick') {
-    notified = await notifyPunishment(target, `subarea-${action}`, explanation);
+    notified = await notifyPunishment(target, `subarea-${action}`, explanation, store);
     current = await context(command);
     registered = currentArea(command, store, current);
     target = await targetMember(command, current, registered.area, store);

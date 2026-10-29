@@ -161,6 +161,45 @@ test('warn persists its warning and moderation case and replies privately', asyn
   } finally { store.close(); }
 });
 
+test('disabled punishment DMs skip delivery while completing moderation and keeping cases', async () => {
+  const store = new Store(':memory:');
+  try {
+    store.updateSettings(ids.guild, { punishmentDmEnabled: false });
+    for (const action of ['warn', 'timeout', 'kick', 'ban']) {
+      const f = fixture(action);
+      await handleInteraction(f.interaction, store);
+      assert.equal(f.counters.notices, 0);
+      assert.equal(store.listCases(ids.guild)[0]?.action, action);
+      assert.doesNotMatch(f.finalReply().content ?? '', /無法私訊/);
+      if (action === 'timeout') assert.equal(f.counters.timeouts, 1);
+      if (action === 'kick') assert.equal(f.counters.kicks, 1);
+      if (action === 'ban') assert.equal(f.counters.bans, 1);
+    }
+    assert.equal(store.listCases(ids.guild).length, 4);
+    store.updateSettings(ids.guild, { punishmentDmEnabled: true });
+    const resumed = fixture('warn');
+    await handleInteraction(resumed.interaction, store);
+    assert.equal(resumed.counters.notices, 1);
+  } finally { store.close(); }
+});
+
+test('disabling DMs cannot bypass a grant revoked during the final target lookup', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('kick');
+    f.actor.permissions.remove(PermissionFlagsBits.KickMembers);
+    store.setGrant(ids.guild, ids.actor, 'kick', ids.issuer);
+    store.updateSettings(ids.guild, { punishmentDmEnabled: false });
+    // Initial lookup, post-confirmation lookup, and post-notification authority refresh.
+    f.state.onTargetFetch = (count) => { if (count === 3) store.revokeGrant(ids.guild, ids.actor, 'kick'); };
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.counters.notices, 0);
+    assert.equal(f.counters.kicks, 0);
+    assert.deepEqual(store.listCases(ids.guild), []);
+    assert.match(f.finalReply().content ?? '', /授權.*撤回|授權.*變更/);
+  } finally { store.close(); }
+});
+
 test('warnings displays only records from the interaction guild', async () => {
   const store = new Store(':memory:');
   try {

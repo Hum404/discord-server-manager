@@ -1,6 +1,6 @@
 # Discord 伺服器管理機器人
 
-使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。伺服器處罰日誌與成員操作紀錄分開查詢。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
+使用 TypeScript、discord.js 14 與 SQLite 製作，提供繁體中文管理指令、逐項管理授權、可配置的處罰公告與私訊、處罰申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。伺服器處罰日誌與成員操作紀錄分開查詢。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
 
 ## 環境需求
 
@@ -50,7 +50,7 @@ npm run invite
 
 | 權限 | 用途 |
 | --- | --- |
-| View Channels、Send Messages、Embed Links | 歡迎訊息與管理紀錄。 |
+| View Channels、Send Messages、Embed Links | 歡迎訊息、管理紀錄及處罰公告。 |
 | Read Message History、Manage Messages、Pin Messages | 讀取、清理、置頂及取消置頂訊息。 |
 | Moderate Members | 設定與解除禁言。 |
 | Kick Members | 踢出成員。 |
@@ -124,6 +124,8 @@ npm run commands:sync
 | `/clear amount` | 確認後清理目前頻道的 1 至 100 則訊息。 | Manage Messages 或 `clear` 授權；仍需查看及讀取頻道歷史 |
 | `/config view` | 查看此伺服器的設定。 | Manage Server |
 | `/config logs [channel]` | 設定本服伺服器處罰日誌頻道；子區等成員操作不發到此頻道。省略停用通知，本機紀錄仍保存。 | Manage Server |
+| `/config punishments [channel] [channel-id] [enabled] [dm] [include-subareas]` | 設定處罰公告位置、公告／私訊開關及是否公告子區處罰；目標擇一填寫，無參數則查看設定。 | 原生 Manage Server |
+| `/config punishment-test` | 向已啟用的處罰公告位置發送測試通知，不執行處罰或建立案件。 | 原生 Manage Server |
 | `/config welcome [channel]` | 設定歡迎頻道；省略頻道則停用。 | Manage Server |
 | `/config welcome-message message` | 設定歡迎訊息範本，最多 1,000 字元。 | Manage Server |
 | `/config appeals [channel]` | 設定私人申訴通知頻道；省略則停用頻道通知。 | Manage Server |
@@ -196,6 +198,56 @@ npm run commands:sync
 
 Bot 授權不包含再次授權別人、修改伺服器設定或審核申訴。撤回 Bot 授權不會移除用戶原本的 Discord 身分組權限；本來已有對應原生權限的用戶仍可使用該功能。
 
+### 處罰公告與私訊設定
+
+原生具有 Manage Server 權限的管理員可指定本伺服器的處罰公告位置。設定保存在 SQLite，升級後無須重新填入 Token。公告預設關閉，處罰前私訊預設開啟；兩項可分別調整。
+
+指定文字頻道、公告頻道、討論串或論壇帖子。提供新目標時會開啟公告，也可明確設定 `enabled:false`：
+
+```text
+/config punishments channel:#處罰公告 enabled:true dm:true
+```
+
+若討論串／帖子沒有出現在選單，可改用其 ID 或本服連結；`channel` 與 `channel-id` 只能擇一填寫。論壇父頻道不能直接作為發送位置，請選擇其中一篇帖子：
+
+```text
+/config punishments channel-id:123456789012345678 enabled:true
+```
+
+```text
+/config punishments channel-id:https://discord.com/channels/伺服器ID/帖子ID enabled:true
+```
+
+測試目前位置；訊息會清楚標示為測試，不會處罰成員或產生案件：
+
+```text
+/config punishment-test
+```
+
+公告在處罰完成、案件保存後發送，包含處罰種類、對象、執行者、原因、時長等詳細內容、範圍、時間與本服編號；可申訴的處罰附上當事人的申訴入口。預設公告警告、伺服器禁言、踢出、封鎖，以及解除禁言、解除封鎖、撤銷警告。通知中的用戶與原因不會觸發 `@everyone`、身分組或用戶通知。
+
+管理員若也希望公告子區禁言、移除及解除限制，可另外開啟：
+
+```text
+/config punishments include-subareas:true
+```
+
+這些操作仍屬於成員紀錄，透過 `/records` 查詢，不會因此進入 `/config logs` 的伺服器處罰日誌。置頂、刪訊息、改名、鎖區及授權等非處罰操作也不會成為處罰公告。處罰公告與伺服器日誌可使用不同目的地；若設為同一頻道，已成功公告的同一筆伺服器處罰只發送一次。
+
+只關閉公告、保留已設定的位置，或只關閉處罰前私訊：
+
+```text
+/config punishments enabled:false
+```
+
+```text
+/config punishments dm:false
+```
+
+未提供的參數會保留原值；再次設定 `enabled:true` 可沿用已保存的位置。無參數的 `/config punishments` 及 `/config view` 可查看目前狀態。關閉私訊不會停用案件紀錄、公告或申訴指令；被踢出／封鎖後可能無法再查看伺服器公告，管理員應另行提供當事人可用的申訴入口。
+
+Bot 需有目標的 View Channel、Embed Links，文字／公告頻道另需 Send Messages，討論串／帖子需 Send Messages in Threads；私密討論串還需符合成員或 Manage Threads 存取條件。目標必須屬於本伺服器，且討論串目前可發言；Bot 不會為了公告自動重新開啟已封存或原生鎖定的帖子。公告發送失敗時，處罰與本機紀錄仍保留，操作者會收到提示。啟用通知前，請確認目的地的查看權限符合該伺服器對處罰資訊的公開範圍。
+
 ### 處罰申訴工單
 
 先建立一個只有審核人員可見的文字頻道，再設定通知位置：
@@ -206,7 +258,7 @@ Bot 授權不包含再次授權別人、修改伺服器設定或審核申訴。�
 
 程式會檢查此頻道的 `@everyone`、非管理身分組及個別非管理成員都沒有查看權限，並確認 Bot 能查看、發送訊息及嵌入連結。審核人員需有原生 Manage Server 或 Administrator 權限；若其他普通身分組仍可查看，Bot 會拒絕發送工單內容。尚未設定通知頻道或通知失敗時，工單仍保存在 SQLite，管理員可使用 `/appeal queue` 查看。
 
-警告、禁言、踢出、封鎖及子區處罰前，Bot 會先私訊申訴入口。操作完成且案件已保存後，當事人可按私訊中的「提交申訴」，或執行：
+處罰前私訊啟用時，警告、禁言、踢出、封鎖及子區處罰前，Bot 會先私訊申訴入口。操作完成且案件已保存後，當事人可按私訊中的「提交申訴」，或執行：
 
 ```text
 /appeal submit
@@ -378,7 +430,7 @@ Discord 的討論串原生封存／鎖定會同時阻止帖主發言，無法只
 
 `/config logs` 指定的頻道只接收伺服器層級的警告、禁言、踢出、封鎖及解除處罰通知：`warn`、`timeout`、`untimeout`、`kick`、`ban`、`unban`、`warning-remove`。`/admin cases` 和 `/admin case` 也只查詢這類案件；`user` 篩選的是被處罰的成員。
 
-子區建立、指派、協管授權、置頂、刪訊息、慢速模式、鎖定，以及子區內的禁言／移除成員，改為成員紀錄。一般訊息 APP 操作、批次清理、設定、身分組與 Bot 授權變更、申訴流程操作也保存為成員紀錄，不發到上述日誌頻道。每筆保留執行者、操作對象、原因及可用的頻道資訊，回覆顯示「成員紀錄 #N」。
+子區建立、指派、協管授權、置頂、刪訊息、慢速模式、鎖定，以及子區內的禁言／移除成員，改為成員紀錄。一般訊息 APP 操作、批次清理、設定、身分組與 Bot 授權變更、申訴流程操作也保存為成員紀錄，不發到上述日誌頻道。每筆保留執行者、操作對象、原因及可用的頻道資訊，回覆顯示「成員紀錄 #N」。管理員可透過獨立的 `/config punishments include-subareas:true` 選擇公告子區處罰；不會改變紀錄的分類與查閱權限。
 
 查看自己最近執行的操作：
 
@@ -558,6 +610,7 @@ npm run build
 - **Missing Permissions 或無法管理某位成員：** 檢查機器人及操作者的功能權限、頻道覆寫權限，以及雙方的最高角色位置。
 - **授權後看不到管理指令：** 查看伺服器設定中的應用程式整合與指令使用權限。Bot 授權不會移除 Discord 另外設定的指令禁止規則。
 - **申訴沒有出現在頻道：** 用 `/appeal queue` 確認工單是否已保存，並檢查 `/config appeals`、頻道私人設定及 Bot 的發送／嵌入連結權限。
+- **處罰公告沒有出現：** 以 `/config punishments` 確認 `enabled` 與位置，執行 `/config punishment-test` 檢查權限；討論串／帖子需未封存、未原生鎖定且 Bot 能發言。子區處罰另需 `include-subareas:true`。公告設定按伺服器分開，與 `/config logs` 及私訊開關互不替代。
 - **子區無法建立或限制成員：** 重新使用新版邀請網址授權子區、討論串及置頂權限，確認已設定 `/config subareas`，並檢查母頻道／分類覆寫與 Bot 角色位置。
 - **討論串移除後仍可加入：** 公開討論串移除成員只會移出成員名單，無法原生禁止查看或重新加入；需永久隔離時使用獨立文字子區的存取限制。
 - **討論串禁言沒有刪訊息：** 確認 Bot 在線、有 Manage Messages 與查看／歷史權限，且目前討論串已登記；此機制不會在 Discord 原生輸入框禁止發言。

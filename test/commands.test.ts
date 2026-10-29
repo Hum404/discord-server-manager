@@ -144,7 +144,7 @@ test('Discord action options enforce timeout, deletion, and cleanup API limits',
 test('configuration permits only supported destination channels and bounded welcome text', () => {
   const config = getCommand('config');
   assert.deepEqual(config.options?.map((option) => option.name).sort(),
-    ['view', 'logs', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
+    ['view', 'logs', 'punishments', 'punishment-test', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
   for (const name of ['logs', 'welcome']) {
     const subcommand = getOption('config', name);
     assert.ok(subcommand.type === ApplicationCommandOptionType.Subcommand);
@@ -169,6 +169,30 @@ test('configuration permits only supported destination channels and bounded welc
   assert.ok(subareaCategory.type === ApplicationCommandOptionType.Channel);
   assert.notEqual(subareaCategory.required, true);
   assert.deepEqual(subareaCategory.channel_types, [ChannelType.GuildCategory]);
+});
+
+test('punishment configuration supports explicit notices, DMs and actual thread destinations', () => {
+  const config = getCommand('config');
+  assert.equal(config.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
+  const destination = getSubOption('config', 'punishments', 'channel');
+  assert.ok(destination.type === ApplicationCommandOptionType.Channel);
+  assert.deepEqual(destination.channel_types, [ChannelType.GuildText, ChannelType.GuildAnnouncement,
+    ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread]);
+  assert.notEqual(destination.required, true);
+  assert.ok(!destination.channel_types.includes(ChannelType.GuildForum), 'forum containers cannot receive a normal send');
+  const channelId = getSubOption('config', 'punishments', 'channel-id');
+  assert.ok(channelId.type === ApplicationCommandOptionType.String);
+  assert.equal(channelId.min_length, 17);
+  assert.equal(channelId.max_length, 250);
+  assert.notEqual(channelId.required, true);
+  for (const name of ['enabled', 'dm', 'include-subareas']) {
+    const option = getSubOption('config', 'punishments', name);
+    assert.ok(option.type === ApplicationCommandOptionType.Boolean);
+    assert.notEqual(option.required, true);
+  }
+  const testNotice = getOption('config', 'punishment-test');
+  assert.ok(testNotice.type === ApplicationCommandOptionType.Subcommand);
+  assert.equal(testNotice.options?.length ?? 0, 0, 'test notices use the configured destination');
 });
 
 test('access grants use bounded capabilities with an explicit all option and revocable targets', () => {

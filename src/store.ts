@@ -16,6 +16,10 @@ export interface GuildSettings {
   appealChannelId: string | null;
   subareaCategoryId: string | null;
   subareaForumId: string | null;
+  punishmentChannelId: string | null;
+  punishmentNoticesEnabled: boolean;
+  punishmentDmEnabled: boolean;
+  punishmentIncludeSubareas: boolean;
 }
 
 export interface Warning {
@@ -101,7 +105,8 @@ export interface SubareaRestriction {
   updatedAt: string;
 }
 
-type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId' | 'subareaForumId'>>;
+type SettingsPatch = Partial<Pick<GuildSettings, 'logChannelId' | 'welcomeChannelId' | 'welcomeMessage' | 'appealChannelId' | 'subareaCategoryId' | 'subareaForumId'
+  | 'punishmentChannelId' | 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas'>>;
 type NewWarning = Pick<Warning, 'guildId' | 'userId' | 'moderatorId' | 'reason'>;
 type NewCase = Pick<ModerationCase, 'guildId' | 'action' | 'userId' | 'moderatorId' | 'reason'> & {
   details?: string; channelId?: string | null;
@@ -319,6 +324,17 @@ export class Store {
           this.db.exec(`ALTER TABLE guild_settings ADD COLUMN ${column} TEXT`);
         }
       }
+      const punishmentColumns = [
+        ['punishment_channel_id', 'TEXT'],
+        ['punishment_notices_enabled', 'INTEGER NOT NULL DEFAULT 0 CHECK(punishment_notices_enabled IN (0, 1))'],
+        ['punishment_dm_enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK(punishment_dm_enabled IN (0, 1))'],
+        ['punishment_include_subareas', 'INTEGER NOT NULL DEFAULT 0 CHECK(punishment_include_subareas IN (0, 1))'],
+      ] as const;
+      for (const [column, definition] of punishmentColumns) {
+        if (!settingsColumns.some((entry) => entry.name === column)) {
+          this.db.exec(`ALTER TABLE guild_settings ADD COLUMN ${column} ${definition}`);
+        }
+      }
       this.migrateCaseNumbers();
       this.migrateAuditScopes();
     } catch (error) {
@@ -407,12 +423,23 @@ export class Store {
       SELECT guild_id AS guildId, log_channel_id AS logChannelId,
              welcome_channel_id AS welcomeChannelId, welcome_message AS welcomeMessage,
              appeal_channel_id AS appealChannelId, subarea_category_id AS subareaCategoryId,
-             subarea_forum_id AS subareaForumId
+             subarea_forum_id AS subareaForumId, punishment_channel_id AS punishmentChannelId,
+             punishment_notices_enabled AS punishmentNoticesEnabled,
+             punishment_dm_enabled AS punishmentDmEnabled,
+             punishment_include_subareas AS punishmentIncludeSubareas
       FROM guild_settings WHERE guild_id = ?
-    `).get(guildId) as unknown as GuildSettings | undefined;
-    return row ?? {
+    `).get(guildId) as unknown as (Omit<GuildSettings, 'punishmentNoticesEnabled' | 'punishmentDmEnabled' | 'punishmentIncludeSubareas'> & {
+      punishmentNoticesEnabled: number; punishmentDmEnabled: number; punishmentIncludeSubareas: number;
+    }) | undefined;
+    return row ? {
+      ...row, punishmentNoticesEnabled: row.punishmentNoticesEnabled === 1,
+      punishmentDmEnabled: row.punishmentDmEnabled === 1,
+      punishmentIncludeSubareas: row.punishmentIncludeSubareas === 1,
+    } : {
       guildId, logChannelId: null, welcomeChannelId: null, welcomeMessage: DEFAULT_WELCOME_MESSAGE,
       appealChannelId: null, subareaCategoryId: null, subareaForumId: null,
+      punishmentChannelId: null, punishmentNoticesEnabled: false,
+      punishmentDmEnabled: true, punishmentIncludeSubareas: false,
     };
   }
 
@@ -426,25 +453,39 @@ export class Store {
       appealChannelId: patch.appealChannelId === undefined ? current.appealChannelId : patch.appealChannelId,
       subareaCategoryId: patch.subareaCategoryId === undefined ? current.subareaCategoryId : patch.subareaCategoryId,
       subareaForumId: patch.subareaForumId === undefined ? current.subareaForumId : patch.subareaForumId,
+      punishmentChannelId: patch.punishmentChannelId === undefined ? current.punishmentChannelId : patch.punishmentChannelId,
+      punishmentNoticesEnabled: patch.punishmentNoticesEnabled === undefined ? current.punishmentNoticesEnabled : patch.punishmentNoticesEnabled,
+      punishmentDmEnabled: patch.punishmentDmEnabled === undefined ? current.punishmentDmEnabled : patch.punishmentDmEnabled,
+      punishmentIncludeSubareas: patch.punishmentIncludeSubareas === undefined ? current.punishmentIncludeSubareas : patch.punishmentIncludeSubareas,
     };
     if (settings.logChannelId !== null) identifier(settings.logChannelId);
     if (settings.welcomeChannelId !== null) identifier(settings.welcomeChannelId);
     if (settings.appealChannelId !== null) identifier(settings.appealChannelId);
     if (settings.subareaCategoryId !== null) identifier(settings.subareaCategoryId);
     if (settings.subareaForumId !== null) identifier(settings.subareaForumId);
+    if (settings.punishmentChannelId !== null) identifier(settings.punishmentChannelId);
+    for (const value of [settings.punishmentNoticesEnabled, settings.punishmentDmEnabled, settings.punishmentIncludeSubareas]) {
+      if (typeof value !== 'boolean') throw new TypeError('Punishment notification switches must be booleans.');
+    }
     requiredText(settings.welcomeMessage, 'Welcome message', 2000);
     this.db.prepare(`
-      INSERT INTO guild_settings(guild_id, log_channel_id, welcome_channel_id, welcome_message, appeal_channel_id, subarea_category_id, subarea_forum_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO guild_settings(guild_id, log_channel_id, welcome_channel_id, welcome_message, appeal_channel_id, subarea_category_id, subarea_forum_id,
+        punishment_channel_id, punishment_notices_enabled, punishment_dm_enabled, punishment_include_subareas)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(guild_id) DO UPDATE SET
         log_channel_id = excluded.log_channel_id,
         welcome_channel_id = excluded.welcome_channel_id,
         welcome_message = excluded.welcome_message,
         appeal_channel_id = excluded.appeal_channel_id,
         subarea_category_id = excluded.subarea_category_id,
-        subarea_forum_id = excluded.subarea_forum_id
+        subarea_forum_id = excluded.subarea_forum_id,
+        punishment_channel_id = excluded.punishment_channel_id,
+        punishment_notices_enabled = excluded.punishment_notices_enabled,
+        punishment_dm_enabled = excluded.punishment_dm_enabled,
+        punishment_include_subareas = excluded.punishment_include_subareas
     `).run(guildId, settings.logChannelId, settings.welcomeChannelId, settings.welcomeMessage,
-      settings.appealChannelId, settings.subareaCategoryId, settings.subareaForumId);
+      settings.appealChannelId, settings.subareaCategoryId, settings.subareaForumId, settings.punishmentChannelId,
+      Number(settings.punishmentNoticesEnabled), Number(settings.punishmentDmEnabled), Number(settings.punishmentIncludeSubareas));
     return settings;
   }
 

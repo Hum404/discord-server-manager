@@ -222,8 +222,9 @@ async function review(
 }
 
 /** Deliver the entry before kicks/bans, while a mutual guild still permits DMs. */
-export async function notifyPunishment(target: GuildMember, action: string, reason: string): Promise<boolean> {
+export async function notifyPunishment(target: GuildMember, action: string, reason: string, store?: Store): Promise<boolean> {
   if (!APPEALABLE_ACTIONS.has(action)) return true;
+  if (store && !store.getSettings(target.guild.id).punishmentDmEnabled) return true;
   try {
     await target.send({
       embeds: [new EmbedBuilder().setColor(0xf0b232).setTitle('管理操作通知與申訴入口')
@@ -302,6 +303,14 @@ export async function handleAppealInteraction(interaction: Interaction, store: S
   if (!interaction.customId.startsWith('appeal:')) return false;
   try {
     if (interaction.isButton()) {
+      const caseButton = /^appeal:case:([0-9]{17,20}):([0-9]{1,16}):([0-9]{17,20})$/.exec(interaction.customId);
+      if (caseButton) {
+        const guildId = caseButton[1]!;
+        if (interaction.user.id !== caseButton[3] || (interaction.guildId && interaction.guildId !== guildId)) throw new UserError(unavailable);
+        const original = localCase(store, Number(caseButton[2]), interaction.user.id, guildId);
+        await interaction.showModal(appealModal(original, interaction.user.id));
+        return true;
+      }
       const open = /^appeal:open:([0-9]{17,20}):([0-9]{17,20})$/.exec(interaction.customId);
       if (open) {
         const guildId = open[1]!;

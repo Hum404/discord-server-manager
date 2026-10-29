@@ -136,7 +136,7 @@ async function moderate(command: Command, store: Store, action: 'mute' | 'unmute
     action === 'mute' || action === 'unmute' ? PermissionFlagsBits.ManageMessages : PermissionFlagsBits.ManageThreads]);
   if (action === 'kick' && !await confirmRemoval(command, userId)) return;
   let notified = true;
-  if (action === 'mute' || action === 'kick') notified = await notifyPunishment(target, `subarea-${action}`, reason);
+  if (action === 'mute' || action === 'kick') notified = await notifyPunishment(target, `subarea-${action}`, reason, store);
   current = await context(command, store);
   target = await command.guild.members.fetch({ user: userId, force: true });
   current.area = assertAuthority(current, command, store);

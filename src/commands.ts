@@ -124,7 +124,7 @@ export const commands = [
       option.setName('amount').setDescription('刪除數量（僅能刪除 14 天內的訊息）')
         .setMinValue(1).setMaxValue(100).setRequired(true),
     ),
-  command('config', '設定本伺服器的管理紀錄與歡迎訊息')
+  command('config', '設定本伺服器的處罰通知、管理紀錄與歡迎訊息')
     .addSubcommand((subcommand) =>
       subcommand.setName('view').setDescription('查看目前的伺服器設定'),
     )
@@ -134,6 +134,30 @@ export const commands = [
           option.setName('channel').setDescription('伺服器警告、禁言、踢出、封鎖及解除處罰通知頻道')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
         ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName('punishments').setDescription('設定處罰公告、私訊及子區處罰通知；不填參數可查看目前設定')
+        .addChannelOption((option) =>
+          option.setName('channel').setDescription('處罰公告發送的文字頻道、討論串或論壇帖子；與 channel-id 擇一')
+            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement,
+              ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread),
+        )
+        .addStringOption((option) =>
+          option.setName('channel-id').setDescription('通知頻道／帖子 ID 或本服連結；與 channel 擇一')
+            .setMinLength(17).setMaxLength(250),
+        )
+        .addBooleanOption((option) =>
+          option.setName('enabled').setDescription('開關處罰公告；指定新頻道時預設開啟，關閉仍保留目標'),
+        )
+        .addBooleanOption((option) =>
+          option.setName('dm').setDescription('是否在處罰前私訊當事人及提供申訴入口；預設開啟'),
+        )
+        .addBooleanOption((option) =>
+          option.setName('include-subareas').setDescription('公告是否包含子區禁言、移除及解除限制；預設關閉'),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand.setName('punishment-test').setDescription('向已啟用的處罰公告目標發送測試通知；不執行處罰或建立案件'),
     )
     .addSubcommand((subcommand) =>
       subcommand.setName('welcome').setDescription('設定歡迎頻道；不選頻道則停用')

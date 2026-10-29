@@ -2,6 +2,7 @@ import { ChannelType, EmbedBuilder, escapeMarkdown, type ChatInputCommandInterac
 import { logFailure, UserError } from './errors.js';
 import { truncate } from './presentation.js';
 import type { ModerationCase, Store } from './store.js';
+import { deliverPunishmentNotice } from './punishment-notices.js';
 
 const actionLabels: Record<string, string> = {
   warn: '警告', timeout: '禁言', untimeout: '解除禁言', kick: '踢出',
@@ -34,11 +35,12 @@ export async function record(
     return '\n⚠️ 操作已完成，但本機管理紀錄寫入失敗，請檢查儲存空間。';
   }
   // Member activity stays in the private ledger, even when a server log is configured.
-  const suffix = entry.scope === 'server' ? `\n本服案件 #${entry.caseNumber}` : `\n成員紀錄 #${entry.caseNumber}`;
+  const notice = await deliverPunishmentNotice(command, store, entry);
+  const suffix = (entry.scope === 'server' ? `\n本服案件 #${entry.caseNumber}` : `\n成員紀錄 #${entry.caseNumber}`) + notice.warning;
   if (entry.scope !== 'server') return suffix;
   try {
     const settings = store.getSettings(command.guildId);
-    if (!settings.logChannelId) return suffix;
+    if (!settings.logChannelId || settings.logChannelId === notice.sentChannelId) return suffix;
     const channel = await command.guild.channels.fetch(settings.logChannelId);
     if (!channel || channel.guildId !== command.guildId
       || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {

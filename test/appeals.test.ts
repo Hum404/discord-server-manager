@@ -185,6 +185,65 @@ test('DM appeal buttons are bound to the applicant and original case guild', asy
   } finally { store.close(); }
 });
 
+test('announcement appeal buttons select their exact older local case instead of the newest punishment', async () => {
+  const store = new Store(':memory:');
+  try {
+    // Make the internal ID differ from the public, guild-local case number.
+    originalCase(store, ids.other, ids.otherGuild);
+    originalCase(store, ids.other, ids.otherGuild);
+    const original = originalCase(store);
+    const newer = originalCase(store);
+    assert.notEqual(original.id, original.caseNumber);
+    const f = fixture();
+    const customId = `appeal:case:${ids.guild}:${original.caseNumber}:${ids.user}`;
+    assert.equal(await handleAppealInteraction(f.interaction('button', { customId }) as unknown as Interaction, store), true);
+    assert.equal(f.modals[0]?.custom_id, `appeal:submit-local:${ids.guild}:${ids.user}`);
+    assert.equal(formCaseNumber(f.modals[0]), String(original.caseNumber));
+    assert.notEqual(formCaseNumber(f.modals[0]), String(newer.caseNumber));
+    await handleAppealInteraction(f.interaction('modal', {
+      customId: f.modals[0]!.custom_id,
+      fields: { case_id: formCaseNumber(f.modals[0])!, reason: 'Appeal the older announcement' },
+    }) as unknown as Interaction, store);
+    assert.equal(store.getAppealForCase(ids.guild, original.id, ids.user)?.caseId, original.id);
+    assert.equal(store.getAppealForCase(ids.guild, newer.id, ids.user), null);
+  } finally { store.close(); }
+});
+
+test('announcement appeal buttons reject wrong users, foreign guilds, unrelated owners and nonappealable cases', async () => {
+  const store = new Store(':memory:');
+  try {
+    const original = originalCase(store);
+    const anotherMember = originalCase(store, ids.other);
+    const nonappealable = store.addCase({ guildId: ids.guild, userId: ids.user,
+      moderatorId: ids.reviewer, action: 'subarea-pin', reason: 'Private member activity' });
+    const foreignOnly = originalCase(store, ids.user, ids.otherGuild);
+    for (const options of [
+      { customId: `appeal:case:${ids.guild}:${original.caseNumber}:${ids.user}`, userId: ids.other },
+      { customId: `appeal:case:${ids.guild}:${original.caseNumber}:${ids.user}`, guildId: ids.otherGuild },
+      { customId: `appeal:case:${ids.guild}:${anotherMember.caseNumber}:${ids.user}` },
+      { customId: `appeal:case:${ids.guild}:${nonappealable.caseNumber}:${ids.user}` },
+      { customId: `appeal:case:${ids.guild}:999:${ids.user}` },
+      { customId: `appeal:case:${ids.guild}:0:${ids.user}` },
+      { customId: `appeal:case:${ids.guild}:9007199254740992:${ids.user}` },
+    ]) {
+      const f = fixture();
+      await handleAppealInteraction(f.interaction('button', options) as unknown as Interaction, store);
+      assert.equal(f.modals.length, 0, options.customId);
+      assert.match(content(f.replies), /找不到可供你申訴/);
+      assert.doesNotMatch(content(f.replies), /Original private|Private member activity/);
+    }
+    // An equal case number in another guild resolves only the explicitly bound guild.
+    const f = fixture();
+    await handleAppealInteraction(f.interaction('button', {
+      customId: `appeal:case:${ids.otherGuild}:${foreignOnly.caseNumber}:${ids.user}`,
+    }) as unknown as Interaction, store);
+    assert.equal(f.modals[0]?.custom_id, `appeal:submit-local:${ids.otherGuild}:${ids.user}`);
+    assert.equal(formCaseNumber(f.modals[0]), String(foreignOnly.caseNumber));
+    assert.equal(store.listAppeals(ids.guild).length, 0);
+    assert.equal(store.listAppeals(ids.otherGuild).length, 0);
+  } finally { store.close(); }
+});
+
 test('submit opens a form only for an owned appealable case in the current guild', async () => {
   const store = new Store(':memory:');
   try {
@@ -391,6 +450,31 @@ test('punishment notifications contain a bound DM appeal entry and closed DMs do
   target.send = async () => { throw { code: 50007 }; };
   assert.equal(await notifyPunishment(target as unknown as GuildMember, 'kick', 'Original reason'), false);
   assert.equal(calls, 0);
+});
+
+test('disabled punishment DMs skip delivery without reporting failure and do not disable another guild', async () => {
+  const store = new Store(':memory:');
+  const sent: Array<{ guildId: string; payload: Payload }> = [];
+  const target = (guildId: string) => ({
+    id: ids.user, guild: { id: guildId, name: 'Server' },
+    async send(payload: Payload) { sent.push({ guildId, payload }); },
+  }) as unknown as GuildMember;
+  try {
+    store.updateSettings(ids.guild, { punishmentDmEnabled: false });
+    for (const action of ['warn', 'timeout', 'kick', 'ban', 'subarea-mute', 'subarea-kick']) {
+      assert.equal(await notifyPunishment(target(ids.guild), action, 'Do not send this reason', store), true);
+    }
+    assert.equal(sent.length, 0);
+    assert.equal(await notifyPunishment(target(ids.otherGuild), 'ban', 'Other guild still notifies', store), true);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.guildId, ids.otherGuild);
+    const rows = sent[0]?.payload.components as Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }>;
+    assert.equal(rows[0]?.toJSON().components[0]?.custom_id, `appeal:open:${ids.otherGuild}:${ids.user}`);
+    store.updateSettings(ids.guild, { punishmentDmEnabled: true });
+    assert.equal(await notifyPunishment(target(ids.guild), 'subarea-mute', 'Enabled again', store), true);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1]?.guildId, ids.guild);
+  } finally { store.close(); }
 });
 
 test('guild submission resolves the displayed local number while preserving its internal case foreign key', async () => {
