@@ -232,3 +232,45 @@ test('a failed member-ledger write reports the storage failure without falling b
     assert.deepEqual(a.sent, []);
   });
 });
+
+test('server-log action filters retain all cases while publishing only selected management actions', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.setNotificationActions(ids.guildA, 'management', ['timeout']);
+    await record(a.command, store, 'warn', ids.target, 'Unselected but retained');
+    assert.deepEqual(a.fetched, []);
+    await record(a.command, store, 'timeout', ids.target, 'Selected management action');
+    assert.equal(a.sent.length, 1);
+    assert.match(a.sent[0]!.embeds[0]!.toJSON().title ?? '', /禁言/);
+    assert.equal(store.listServerCases(ids.guildA).length, 2);
+    assert.equal(store.getGuildCase(ids.guildA, 1)?.reason, 'Unselected but retained');
+  });
+});
+
+test('a management action disabled while fetching a server-log channel is not posted', async () => {
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    a.state.onFetch = () => { store.setNotificationActions(ids.guildA, 'management', []); };
+    assert.equal(await record(a.command, store, 'warn', ids.target, 'Pending log'), '\n本服案件 #1');
+    assert.deepEqual(a.fetched, [ids.channelA]);
+    assert.deepEqual(a.sent, []);
+    assert.equal(store.listServerCases(ids.guildA).length, 1);
+  });
+});
+
+test('an unreadable management filter stops server-log delivery after retaining the completed case', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  await withStore(async (store) => {
+    const a = fixture(ids.guildA, ids.channelA);
+    store.updateSettings(ids.guildA, { logChannelId: ids.channelA });
+    store.isNotificationActionEnabled = () => { throw new Error('Unreadable action settings'); };
+    const result = await record(a.command, store, 'ban', ids.target, 'Completed sanction');
+    assert.match(result, /本服案件 #1/);
+    assert.match(result, /紀錄頻道發送失敗/);
+    assert.deepEqual(a.fetched, []);
+    assert.deepEqual(a.sent, []);
+    assert.equal(store.getGuildCase(ids.guildA, 1)?.action, 'ban');
+  });
+});

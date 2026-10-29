@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { APPEALABLE_ACTIONS, MANAGEMENT_SCOPES, type ManagementScope } from './domain.js';
 import { auditScopeForAction, SERVER_AUDIT_ACTIONS, type AuditScope } from './audit-policy.js';
+import { notificationActionsFor, type NoticeKind } from './notification-actions.js';
 
 export type MemberRecordDirection = 'performed' | 'received' | 'all';
 
@@ -137,6 +138,21 @@ function identifier(value: string): string {
   return requiredText(value, 'Identifier', 64);
 }
 
+function notificationActionSelection(kind: NoticeKind, input: unknown): string[] {
+  const allowed = notificationActionsFor(kind);
+  if (!Array.isArray(input) || input.length > allowed.length) {
+    throw new TypeError('Notification actions must be a list of supported actions.');
+  }
+  const selected = new Set<string>();
+  for (const action of input) {
+    if (typeof action !== 'string' || !allowed.includes(action) || selected.has(action)) {
+      throw new TypeError('Notification actions must contain unique supported actions.');
+    }
+    selected.add(action);
+  }
+  return allowed.filter((action) => selected.has(action));
+}
+
 function resultLimit(value = 10): number {
   if (!Number.isInteger(value) || value < 1 || value > 100) {
     throw new RangeError('The result limit must be an integer from 1 to 100.');
@@ -237,6 +253,12 @@ export class Store {
           created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS warnings_guild_user ON warnings(guild_id, user_id, id DESC);
+        CREATE TABLE IF NOT EXISTS notification_action_settings (
+          guild_id TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('management', 'subarea')),
+          actions TEXT NOT NULL CHECK(length(actions) BETWEEN 2 AND 4096),
+          PRIMARY KEY (guild_id, kind)
+        );
         CREATE TABLE IF NOT EXISTS moderation_cases (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           case_number INTEGER CHECK(case_number BETWEEN 1 AND 9007199254740991),
@@ -417,6 +439,38 @@ export class Store {
 
   close(): void {
     this.db.close();
+  }
+
+  /** No saved selection means all current actions; an explicit empty list means none. */
+  getNotificationActions(guildId: string, kind: NoticeKind): string[] {
+    identifier(guildId);
+    const allowed = notificationActionsFor(kind);
+    const row = this.db.prepare(`
+      SELECT actions FROM notification_action_settings WHERE guild_id = ? AND kind = ?
+    `).get(guildId, kind) as { actions: string } | undefined;
+    if (!row) return [...allowed];
+    try {
+      return notificationActionSelection(kind, JSON.parse(row.actions) as unknown);
+    } catch {
+      throw new Error('Stored notification action settings are invalid.');
+    }
+  }
+
+  /** Save a complete allowlist atomically, preserving unselected actions across future upgrades. */
+  setNotificationActions(guildId: string, kind: NoticeKind, actions: readonly string[]): string[] {
+    identifier(guildId);
+    const selected = notificationActionSelection(kind, actions);
+    this.db.prepare(`
+      INSERT INTO notification_action_settings(guild_id, kind, actions) VALUES (?, ?, ?)
+      ON CONFLICT(guild_id, kind) DO UPDATE SET actions = excluded.actions
+    `).run(guildId, kind, JSON.stringify(selected));
+    return selected;
+  }
+
+  isNotificationActionEnabled(guildId: string, kind: NoticeKind, action: string): boolean {
+    identifier(guildId);
+    if (!notificationActionsFor(kind).includes(action)) return false;
+    return this.getNotificationActions(guildId, kind).includes(action);
   }
 
   getSettings(guildId: string): GuildSettings {

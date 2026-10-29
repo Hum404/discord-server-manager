@@ -18,6 +18,7 @@ const subcommandNames: Record<string, ChineseNames> = {
   'config.view': ['查看', '查看'], 'config.logs': ['管理日誌', '管理日志'],
   'config.punishments': ['處罰通知', '处罚通知'],
   'config.subarea-notices': ['子區通知', '子区通知'],
+  'config.notification-actions': ['通知項目', '通知项目'],
   'config.punishment-test': ['測試處罰通知', '测试处罚通知'],
   'config.welcome': ['歡迎頻道', '欢迎频道'],
   'config.welcome-message': ['歡迎內容', '欢迎内容'],
@@ -49,6 +50,7 @@ const optionNames: Record<string, ChineseNames> = {
   reason: ['原因', '原因'], minutes: ['分鐘', '分钟'], delete_days: ['刪除天數', '删除天数'],
   user_id: ['用戶編號', '用户编号'], amount: ['數量', '数量'], channel: ['頻道', '频道'],
   'channel-id': ['頻道編號', '频道编号'], enabled: ['啟用', '启用'],
+  kind: ['通知類型', '通知类型'],
   dm: ['處罰私訊', '处罚私信'], 'include-subareas': ['子區通知', '子区通知'],
   message: ['訊息', '消息'], category: ['分類', '分类'], forum: ['論壇', '论坛'],
   scope: ['功能', '功能'], case: ['案件編號', '案件编号'], status: ['處理狀態', '处理状态'],
@@ -68,6 +70,7 @@ const optionOverrides: Record<string, ChineseNames> = {
 };
 
 const choiceNames: Record<string, ChineseNames> = {
+  '管理通知': ['管理通知', '管理通知'], '子區通知': ['子區通知', '子区通知'],
   '執行的操作': ['執行的操作', '执行的操作'], '收到的操作': ['收到的操作', '收到的操作'],
   '全部相關': ['全部相關', '全部相关'], '全部管理功能': ['全部管理功能', '全部管理功能'],
   '警告與警告查詢': ['警告與警告查詢', '警告与警告查询'],

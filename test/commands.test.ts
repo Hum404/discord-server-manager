@@ -166,7 +166,7 @@ test('Discord action options enforce timeout, deletion, and cleanup API limits',
 test('configuration permits only supported destination channels and bounded welcome text', () => {
   const config = getCommand('config');
   assert.deepEqual(config.options?.map((option) => option.name).sort(),
-    ['view', 'logs', 'punishments', 'punishment-test', 'subarea-notices', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
+    ['view', 'logs', 'punishments', 'punishment-test', 'subarea-notices', 'notification-actions', 'welcome', 'welcome-message', 'appeals', 'subareas'].sort());
   for (const name of ['logs', 'welcome']) {
     const subcommand = getOption('config', name);
     assert.ok(subcommand.type === ApplicationCommandOptionType.Subcommand);
@@ -191,6 +191,20 @@ test('configuration permits only supported destination channels and bounded welc
   assert.ok(subareaCategory.type === ApplicationCommandOptionType.Channel);
   assert.notEqual(subareaCategory.required, true);
   assert.deepEqual(subareaCategory.channel_types, [ChannelType.GuildCategory]);
+});
+
+test('notification action selection requires a bounded management or subarea category', () => {
+  const subcommand = getOption('config', 'notification-actions');
+  assert.ok(subcommand.type === ApplicationCommandOptionType.Subcommand);
+  assert.equal(subcommand.options?.length, 1);
+  const kind = getSubOption('config', 'notification-actions', 'kind');
+  assert.ok(kind.type === ApplicationCommandOptionType.String);
+  assert.equal(kind.required, true);
+  assert.deepEqual(kind.choices?.map((choice) => ({ name: choice.name, value: choice.value })), [
+    { name: '管理通知', value: 'management' },
+    { name: '子區通知', value: 'subarea' },
+  ]);
+  assert.equal(getCommand('config').default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
 });
 
 test('punishment configuration supports explicit notices, DMs and actual thread destinations', () => {

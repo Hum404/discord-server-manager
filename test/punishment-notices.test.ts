@@ -467,6 +467,107 @@ test('notification settings from another guild never activate notices in the inv
   });
 });
 
+test('management action selection suppresses both announcement and server log without removing appealable cases', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log });
+    store.setNotificationActions(ids.guild, 'management', ['timeout']);
+    assert.equal(await record(f.command, store, 'warn', ids.target, 'Retain this warning'), '\n本服案件 #1');
+    assert.deepEqual(f.fetched, []);
+    assert.equal(f.sent.length, 0);
+    const original = store.getGuildCase(ids.guild, 1)!;
+    assert.equal(original.action, 'warn');
+    const appeal = store.createAppeal({ guildId: ids.guild, caseId: original.id, userId: ids.target, reason: 'Please review' });
+    assert.equal(appeal.caseId, original.id);
+    await record(f.command, store, 'timeout', ids.target, 'Selected action', '10 分鐘');
+    assert.deepEqual(f.sent.map((notice) => notice.channelId), [ids.notice, ids.log]);
+    assert.equal(store.listServerCases(ids.guild).length, 2);
+  });
+});
+
+test('child-area action selection can omit delegation while preserving local mute notifications and all records', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log });
+    store.setNotificationActions(ids.guild, 'subarea', ['subarea-mute']);
+    await record(f.command, store, 'subarea-delegate', ids.target, 'Do not announce this grant');
+    assert.deepEqual(f.fetched, []);
+    await record(f.command, store, 'subarea-mute', ids.target, 'Announce this local mute');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0]?.channelId, ids.source);
+    assert.match(f.sent[0]!.payload.embeds[0]!.toJSON().title ?? '', /子區禁言/);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 2);
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+  });
+});
+
+test('empty selections disable only notifications while kind and guild selections remain independent', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log });
+    store.setNotificationActions(ids.guild, 'management', []);
+    store.setNotificationActions(ids.otherGuild, 'subarea', []);
+    await record(f.command, store, 'ban', ids.target, 'Management disabled');
+    assert.equal(f.sent.length, 0);
+    await record(f.command, store, 'subarea-delegate', ids.target, 'Local defaults remain enabled');
+    assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0]?.channelId, ids.source);
+    store.setNotificationActions(ids.guild, 'subarea', []);
+    await record(f.command, store, 'subarea-mute', ids.target, 'Local disabled too');
+    assert.equal(f.sent.length, 1);
+    assert.equal(store.listCases(ids.guild).length, 3);
+  });
+});
+
+test('removing a management action during destination lookup cancels pending announcement and server-log fallback', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log });
+    f.state.onFetch = () => { store.setNotificationActions(ids.guild, 'management', ['timeout']); };
+    assert.equal(await record(f.command, store, 'warn', ids.target, 'Filter changed'), '\n本服案件 #1');
+    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.notice]);
+    assert.deepEqual(f.sent, []);
+    assert.equal(store.getGuildCase(ids.guild, 1)?.action, 'warn');
+  });
+});
+
+test('removing a local action during lookup cancels only that pending local notice', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    f.state.onFetch = () => { store.setNotificationActions(ids.guild, 'subarea', ['subarea-mute']); };
+    assert.equal(await record(f.command, store, 'subarea-delegate', ids.target, 'Filter changed'), '\n成員紀錄 #1');
+    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.source]);
+    assert.deepEqual(f.sent, []);
+    assert.equal(store.getGuildCase(ids.guild, 1)?.action, 'subarea-delegate');
+  });
+});
+
+test('filter read failures before or after a lookup preserve cases without any public fallback', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  for (const stage of ['initial', 'after-fetch']) {
+    await withStore(async (store) => {
+      const f = fixture();
+      enable(store, { logChannelId: ids.log });
+      const original = store.isNotificationActionEnabled.bind(store);
+      let fail = stage === 'initial';
+      f.state.onFetch = () => { fail = true; };
+      store.isNotificationActionEnabled = (...args) => {
+        if (fail) {
+          fail = false; // Even a subsequent successful read must not trigger a fallback send.
+          throw new Error('Corrupted preferences');
+        }
+        return original(...args);
+      };
+      const result = await record(f.command, store, 'warn', ids.target, 'Already completed');
+      assert.match(result, /本服案件 #1/);
+      assert.match(result, /通知項目設定讀取失敗/);
+      assert.deepEqual(f.sent, []);
+      assert.deepEqual(f.fetched.map((fetch) => fetch.id), stage === 'initial' ? [] : [ids.notice]);
+      assert.equal(store.getGuildCase(ids.guild, 1)?.reason, 'Already completed');
+    });
+  }
+});
+
 test('each guild local-notice switch applies only to its own child areas', async () => {
   await withStore(async (store) => {
     const f = fixture();

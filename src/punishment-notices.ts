@@ -4,8 +4,8 @@ import {
   type ChatInputCommandInteraction, type Guild, type MessageContextMenuCommandInteraction,
   type NewsChannel, type TextChannel, type ThreadChannel,
 } from 'discord.js';
-import { SERVER_AUDIT_ACTIONS } from './audit-policy.js';
 import { APPEALABLE_ACTIONS } from './domain.js';
+import { MANAGEMENT_NOTICE_ACTIONS, SUBAREA_NOTICE_ACTIONS } from './notification-actions.js';
 import { logFailure, UserError } from './errors.js';
 import { requireBotPermissions, requirePrivateThreadAccess } from './permissions.js';
 import { truncate } from './presentation.js';
@@ -14,15 +14,11 @@ import type { GuildSettings, ModerationCase, Store } from './store.js';
 type Command = ChatInputCommandInteraction<'cached'> | MessageContextMenuCommandInteraction<'cached'>;
 type NoticeChannel = TextChannel | NewsChannel | ThreadChannel;
 
-const serverActions = new Set<string>(SERVER_AUDIT_ACTIONS);
+const serverActions = new Set<string>(MANAGEMENT_NOTICE_ACTIONS);
 const subareaPunishments = new Set(['subarea-mute', 'subarea-unmute', 'subarea-kick', 'subarea-unkick']);
 // Explicit actions only: ordinary mention commands already send their own notices.
-const subareaManagement = new Set([
-  'subarea-create', 'subarea-assign', 'subarea-delegate', 'subarea-undelegate',
-  'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
-  'subarea-rename', 'subarea-lock', 'subarea-unlock',
-]);
-const subareaActions = new Set([...subareaPunishments, ...subareaManagement]);
+const subareaActions = new Set<string>(SUBAREA_NOTICE_ACTIONS);
+const subareaManagement = new Set<string>(SUBAREA_NOTICE_ACTIONS.filter((action) => !subareaPunishments.has(action)));
 const reversalActions = new Set(['untimeout', 'unban', 'warning-remove', 'subarea-unmute', 'subarea-unkick']);
 const actionLabels: Record<string, string> = {
   warn: '警告', timeout: '伺服器禁言', untimeout: '解除伺服器禁言', kick: '踢出伺服器',
@@ -72,15 +68,24 @@ export async function punishmentNoticeTarget(guild: Guild, channelId: string): P
   return channel;
 }
 
-function shouldSend(settings: GuildSettings, entry: ModerationCase): boolean {
-  if (subareaActions.has(entry.action)) return settings.subareaNoticesEnabled;
-  return serverActions.has(entry.action) && settings.punishmentNoticesEnabled && settings.punishmentChannelId !== null;
+class NotificationFilterError extends Error {}
+
+function shouldSend(settings: GuildSettings, entry: ModerationCase, store: Store): boolean {
+  const local = subareaActions.has(entry.action);
+  const enabled = local ? settings.subareaNoticesEnabled
+    : serverActions.has(entry.action) && settings.punishmentNoticesEnabled && settings.punishmentChannelId !== null;
+  if (!enabled) return false;
+  try {
+    return store.isNotificationActionEnabled(entry.guildId, local ? 'subarea' : 'management', entry.action);
+  } catch (error) {
+    throw new NotificationFilterError('Unable to read notification action settings.', { cause: error });
+  }
 }
 
 /** Called only after the operation and its local case have both been saved. */
 export async function deliverPunishmentNotice(
   command: Command, store: Store, entry: ModerationCase,
-): Promise<{ sentChannelId: string | null; warning: string }> {
+): Promise<{ sentChannelId: string | null; warning: string; filterFailed?: boolean }> {
   const skipped = { sentChannelId: null, warning: '' };
   // Unrelated member operations must never consult or publish to notification settings.
   if ((!serverActions.has(entry.action) && !subareaActions.has(entry.action))
@@ -91,7 +96,7 @@ export async function deliverPunishmentNotice(
       throw new UserError('處罰通知的伺服器不符。');
     }
     const settings = store.getSettings(command.guildId);
-    if (!shouldSend(settings, entry)) return skipped;
+    if (!shouldSend(settings, entry, store)) return skipped;
     const local = subareaActions.has(entry.action);
     // The persisted operation target remains authoritative during outside-channel recovery.
     // Child notices never fall back to the configured server announcement destination.
@@ -122,10 +127,14 @@ export async function deliverPunishmentNotice(
     }
     // Fetches above yield to commands disabling local notices or changing the server destination.
     const current = store.getSettings(command.guildId);
-    if (!shouldSend(current, entry) || (!local && current.punishmentChannelId !== settings.punishmentChannelId)) return skipped;
+    if (!shouldSend(current, entry, store) || (!local && current.punishmentChannelId !== settings.punishmentChannelId)) return skipped;
     await channel.send({ embeds: [embed], components, allowedMentions: { parse: [] } });
     return { sentChannelId: channel.id, warning: '' };
   } catch (error) {
+    if (error instanceof NotificationFilterError) {
+      logFailure('通知項目設定讀取失敗', error);
+      return { sentChannelId: null, warning: '\n⚠️ 通知項目設定讀取失敗，未發送通知；操作與本機紀錄已保留。', filterFailed: true };
+    }
     const management = subareaManagement.has(entry.action);
     logFailure(management ? '子區管理通知發送失敗' : '處罰通知發送失敗', error);
     return { sentChannelId: null, warning: management

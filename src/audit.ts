@@ -37,10 +37,11 @@ export async function record(
   // Member activity stays in the private ledger, even when a server log is configured.
   const notice = await deliverPunishmentNotice(command, store, entry);
   const suffix = (entry.scope === 'server' ? `\n本服案件 #${entry.caseNumber}` : `\n成員紀錄 #${entry.caseNumber}`) + notice.warning;
-  if (entry.scope !== 'server') return suffix;
+  if (entry.scope !== 'server' || notice.filterFailed) return suffix;
   try {
     const settings = store.getSettings(command.guildId);
-    if (!settings.logChannelId || settings.logChannelId === notice.sentChannelId) return suffix;
+    if (!settings.logChannelId || settings.logChannelId === notice.sentChannelId
+      || !store.isNotificationActionEnabled(command.guildId, 'management', action)) return suffix;
     const channel = await command.guild.channels.fetch(settings.logChannelId);
     if (!channel || channel.guildId !== command.guildId
       || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)) {
@@ -55,7 +56,8 @@ export async function record(
       ).setTimestamp();
     if (details) embed.addFields({ name: '詳細內容', value: truncate(escapeMarkdown(details), 1024) });
     // A channel lookup yields to other commands; honor a disabled or changed log setting.
-    if (store.getSettings(command.guildId).logChannelId !== settings.logChannelId) return suffix;
+    if (store.getSettings(command.guildId).logChannelId !== settings.logChannelId
+      || !store.isNotificationActionEnabled(command.guildId, 'management', action)) return suffix;
     await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
     return suffix;
   } catch (error) {

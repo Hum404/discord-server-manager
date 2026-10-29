@@ -165,6 +165,16 @@ export const commands = [
         ),
     )
     .addSubcommand((subcommand) =>
+      subcommand.setName('notification-actions').setDescription('以多選選單設定管理通知或子區通知要發送哪些操作')
+        .addStringOption((option) =>
+          option.setName('kind').setDescription('要自訂的通知類型').setRequired(true)
+            .addChoices(
+              { name: '管理通知', value: 'management' },
+              { name: '子區通知', value: 'subarea' },
+            ),
+        ),
+    )
+    .addSubcommand((subcommand) =>
       subcommand.setName('punishment-test').setDescription('向已啟用的處罰公告目標發送測試通知；不執行處罰或建立案件'),
     )
     .addSubcommand((subcommand) =>

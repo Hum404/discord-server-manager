@@ -290,6 +290,22 @@ test('warn persists its warning and moderation case and replies privately', asyn
   } finally { store.close(); }
 });
 
+test('filtering every management notice retains punishment DMs, warning records and appealable cases', async () => {
+  const store = new Store(':memory:');
+  try {
+    store.setNotificationActions(ids.guild, 'management', []);
+    store.updateSettings(ids.guild, { logChannelId: ids.channel, punishmentChannelId: ids.channel, punishmentNoticesEnabled: true });
+    const f = fixture('warn');
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.counters.notices, 1, 'the pre-action DM remains controlled by its own setting');
+    assert.equal(store.countWarnings(ids.guild, ids.target), 1);
+    assert.equal(store.getGuildCase(ids.guild, 1)?.action, 'warn');
+    assert.equal(store.getGuildCase(ids.guild, 1)?.userId, ids.target);
+    assert.match(f.finalReply().content ?? '', /記錄警告/);
+    assert.doesNotMatch(f.finalReply().content ?? '', /發送失敗/);
+  } finally { store.close(); }
+});
+
 test('disabled punishment DMs skip delivery while completing moderation and keeping cases', async () => {
   const store = new Store(':memory:');
   try {
