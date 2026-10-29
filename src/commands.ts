@@ -136,9 +136,9 @@ export const commands = [
         ),
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName('punishments').setDescription('設定處罰公告、私訊及子區處罰通知；不填參數可查看目前設定')
+      subcommand.setName('punishments').setDescription('設定處罰公告、私訊及子區管理通知；不填參數可查看目前設定')
         .addChannelOption((option) =>
-          option.setName('channel').setDescription('處罰公告發送的文字頻道、討論串或論壇帖子；與 channel-id 擇一')
+          option.setName('channel').setDescription('處罰及子區管理通知的文字頻道、討論串或論壇帖子；與 channel-id 擇一')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement,
               ChannelType.PublicThread, ChannelType.PrivateThread, ChannelType.AnnouncementThread),
         )
@@ -147,13 +147,13 @@ export const commands = [
             .setMinLength(17).setMaxLength(250),
         )
         .addBooleanOption((option) =>
-          option.setName('enabled').setDescription('開關處罰公告；指定新頻道時預設開啟，關閉仍保留目標'),
+          option.setName('enabled').setDescription('開關處罰及子區管理公告；指定新頻道時預設開啟，關閉仍保留目標'),
         )
         .addBooleanOption((option) =>
           option.setName('dm').setDescription('是否在處罰前私訊當事人及提供申訴入口；預設開啟'),
         )
         .addBooleanOption((option) =>
-          option.setName('include-subareas').setDescription('公告是否包含子區禁言、移除及解除限制；預設關閉'),
+          option.setName('include-subareas').setDescription('公告是否包含子區禁言、協管授權、置頂及其他子區管理操作；預設關閉'),
         ),
     )
     .addSubcommand((subcommand) =>

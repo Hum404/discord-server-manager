@@ -272,7 +272,7 @@ export async function mutateSubareaMessage(
   if (operation === 'delete-message') await message.delete();
   else if (operation === 'pin') await message.pin(`子區建立者 ${command.user.id} 置頂`);
   else await message.unpin(`子區建立者 ${command.user.id} 取消置頂`);
-  const suffix = await record(command, store, `subarea-${operation}`, null, operation === 'delete-message' ? '刪除子區訊息' : operation === 'pin' ? '置頂子區訊息' : '取消置頂子區訊息', `子區 ${current.channel.id} · 訊息 ${messageId}`);
+  const suffix = await record(command, store, `subarea-${operation}`, null, operation === 'delete-message' ? '刪除子區訊息' : operation === 'pin' ? '置頂子區訊息' : '取消置頂子區訊息', `子區 ${current.channel.id} · 訊息 ${messageId}`, current.channel.id);
   await command.editReply({ content: (operation === 'delete-message' ? '已刪除訊息。' : operation === 'pin' ? '已置頂訊息。' : '已取消置頂訊息。') + suffix,
     components: [], allowedMentions: noMentions });
 }
@@ -306,7 +306,7 @@ async function manageDelegates(command: Command, store: Store, action: string): 
     current = await refreshManagedArea(command, store, 'owner-admin');
     store.deleteSubareaDelegate(command.guildId, current.channel.id, selected.id);
   }
-  const suffix = await record(command, store, `subarea-${action}`, selected.id, action === 'delegate' ? '授予本子區協管權限' : '撤回本子區協管權限', `子區 ${current.channel.id}`);
+  const suffix = await record(command, store, `subarea-${action}`, selected.id, action === 'delegate' ? '授予本子區協管權限' : '撤回本子區協管權限', `子區 ${current.channel.id}`, current.channel.id);
   await command.editReply({ content: `${action === 'delegate' ? '已授予' : '已撤回'} <@${selected.id}> 的本子區協管權限。${suffix}`, allowedMentions: noMentions });
 }
 
@@ -325,7 +325,7 @@ async function editArea(command: Command, store: Store, action: string): Promise
     await current.channel.setName(name, `子區管理 ${command.user.id}`);
     description = `已更新子區名稱為「${escapeMarkdown(name)}」。`;
   }
-  const suffix = await record(command, store, `subarea-${action}`, null, description, `子區 ${current.channel.id}`);
+  const suffix = await record(command, store, `subarea-${action}`, null, description, `子區 ${current.channel.id}`, current.channel.id);
   await command.editReply({ content: description + suffix, allowedMentions: noMentions });
 }
 
@@ -401,9 +401,9 @@ async function deleteArea(command: Command, store: Store): Promise<void> {
   await current.channel.delete(`子區建立者 ${command.user.id} 刪除`);
   try { store.deleteSubarea(command.guildId, current.channel.id); }
   catch (error) { logFailure('子區已刪除但本機清理失敗', error); }
-  await record(command, store, 'subarea-delete', command.user.id, '建立者確認刪除子區', `子區 ${current.channel.id}`);
+  const suffix = await record(command, store, 'subarea-delete', command.user.id, '建立者確認刪除子區', `子區 ${current.channel.id}`, current.channel.id);
   // Discord may invalidate the interaction endpoint after its channel is deleted.
-  try { await command.editReply({ content: '已刪除子區。', components: [], allowedMentions: noMentions }); }
+  try { await command.editReply({ content: '已刪除子區。' + suffix, components: [], allowedMentions: noMentions }); }
   catch (error) { logFailure('子區已刪除，互動回覆已失效', error); }
 }
 

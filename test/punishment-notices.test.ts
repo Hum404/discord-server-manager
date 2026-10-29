@@ -85,7 +85,8 @@ test('punishment announcements are off by default and unrelated member operation
     assert.deepEqual(f.fetched, []);
     enable(store);
     store.getSettings = () => { throw new Error('Unrelated actions must stay private'); };
-    for (const action of ['config', 'clear', 'subarea-pin', 'subarea-lock', 'message-delete', 'role-add', 'future-action']) {
+    for (const action of ['config', 'clear', 'subarea-tag', 'subarea-role-tag', 'subarea-announce',
+      'message-delete', 'role-add', 'subarea-future-action', 'future-action']) {
       assert.doesNotMatch(await record(f.command, store, action, ids.target, 'Private'), /失敗/);
     }
     assert.deepEqual(f.sent, []);
@@ -145,8 +146,126 @@ test('local punishments require explicit opt-in and remain member records even w
     assert.equal(store.listServerCases(ids.guild).length, 0);
     assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 5);
     const fields = f.sent[0]!.payload.embeds[0]!.toJSON().fields;
+    assert.equal(fields?.find((field) => field.name === '成員紀錄編號')?.value, '#2');
     assert.equal(fields?.find((field) => field.name === '影響範圍')?.value, '僅指定子區');
     assert.equal(fields?.find((field) => field.name === '處罰子區')?.value, `<#${ids.source}>`);
+  });
+});
+
+test('management notices require explicit child-area opt-in and retain their private member-ledger scope', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { logChannelId: ids.log });
+    const actions = ['subarea-create', 'subarea-assign', 'subarea-delegate', 'subarea-undelegate',
+      'subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
+      'subarea-rename', 'subarea-lock', 'subarea-unlock', 'subarea-delete'];
+    for (const action of actions) {
+      await record(f.command, store, action, ids.target, 'Before opt-in', 'Selected child area', ids.source);
+    }
+    assert.equal(f.fetched.length, 0);
+    assert.equal(f.sent.length, 0);
+    store.updateSettings(ids.guild, { punishmentIncludeSubareas: true });
+    for (const action of actions) {
+      await record(f.command, store, action, ids.target, 'After opt-in', 'Selected child area', ids.source);
+    }
+    assert.equal(f.sent.length, actions.length);
+    assert.ok(f.sent.every((notice) => notice.channelId === ids.notice));
+    assert.ok(f.fetched.every((fetch) => fetch.id === ids.notice), 'member operations never fetch the server-log destination');
+    for (const notice of f.sent) {
+      const embed = notice.payload.embeds[0]!.toJSON();
+      assert.match(embed.title ?? '', /^子區管理通知 · /);
+      assert.ok(embed.fields?.some((field) => field.name === '成員紀錄編號'));
+      assert.equal(embed.fields?.find((field) => field.name === '影響範圍')?.value, '僅指定子區');
+      assert.deepEqual(notice.payload.components, [], 'management activities do not offer punishment appeals');
+      assert.deepEqual(notice.payload.allowedMentions, { parse: [] });
+    }
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor, 'performed', 100).length, actions.length * 2);
+  });
+});
+
+test('delegation and revocation notices identify the acting manager, affected member and actual child area', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: true, logChannelId: ids.log });
+    const area = '710000000000000010';
+    for (const action of ['subarea-delegate', 'subarea-undelegate']) {
+      await record(f.command, store, action, ids.target, '協管權限變更 @everyone', `子區 ${area}`, area);
+    }
+    assert.equal(f.sent.length, 2);
+    for (const notice of f.sent) {
+      const embed = notice.payload.embeds[0]!.toJSON();
+      assert.match(embed.title ?? '', /^子區管理通知.*協管/);
+      assert.equal(embed.fields?.find((field) => field.name === '執行者')?.value, `<@${ids.actor}>（${ids.actor}）`);
+      assert.ok(embed.fields?.some((field) => field.value === `<@${ids.target}>（${ids.target}）`));
+      assert.ok(embed.fields?.some((field) => field.value === `<#${area}>`));
+      assert.deepEqual(notice.payload.allowedMentions, { parse: [] });
+      assert.deepEqual(notice.payload.components, []);
+    }
+    assert.ok(store.listMemberCases(ids.guild, ids.actor).every((entry) => entry.channelId === area));
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+  });
+});
+
+test('area and message tools with no member target still announce their selected area without inventing a member', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: true });
+    const selected = '710000000000000010';
+    const actions = ['subarea-pin', 'subarea-unpin', 'subarea-delete-message', 'subarea-slowmode',
+      'subarea-rename', 'subarea-lock', 'subarea-unlock'];
+    for (const action of actions) {
+      const result = await record(f.command, store, action, null, '管理指定子區', `子區 ${selected}；訊息 710000000000000011`, selected);
+      assert.match(result, /^\n成員紀錄 #/);
+      assert.doesNotMatch(result, /失敗/);
+    }
+    assert.equal(f.sent.length, actions.length);
+    for (const notice of f.sent) {
+      const embed = notice.payload.embeds[0]!.toJSON();
+      assert.match(embed.title ?? '', /^子區管理通知/);
+      assert.ok(embed.fields?.some((field) => field.value === `<#${selected}>`));
+      assert.doesNotMatch(JSON.stringify(embed), /<@null>|<@undefined>/);
+      assert.deepEqual(notice.payload.components, []);
+    }
+  });
+});
+
+test('disabling all notices suppresses management delivery even when the child-area scope is enabled', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: true, punishmentNoticesEnabled: false });
+    for (const [action, target] of [['subarea-delegate', ids.target], ['subarea-lock', null]] as const) {
+      assert.doesNotMatch(await record(f.command, store, action, target, 'Keep only the ledger'), /失敗/);
+    }
+    assert.equal(f.fetched.length, 0);
+    assert.equal(f.sent.length, 0);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor).length, 2);
+  });
+});
+
+test('management delivery failure preserves its record and never falls back to the configured server log', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: true, logChannelId: ids.log });
+    f.state.sendFailures = 1;
+    const result = await record(f.command, store, 'subarea-delegate', ids.target, '授予協管', `子區 ${ids.source}`);
+    assert.match(result, /成員紀錄 #1/);
+    assert.match(result, /通知.*失敗/);
+    assert.equal(f.sent.length, 0);
+    assert.deepEqual(f.fetched.map((fetch) => fetch.id), [ids.notice]);
+    assert.equal(store.getMemberCase(ids.guild, 1, ids.actor)?.action, 'subarea-delegate');
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+  });
+});
+
+test('revoking child-area notification scope while fetching cancels a pending delegation notice', async () => {
+  await withStore(async (store) => {
+    const f = fixture();
+    enable(store, { punishmentIncludeSubareas: true });
+    f.state.onFetch = () => store.updateSettings(ids.guild, { punishmentIncludeSubareas: false });
+    assert.equal(await record(f.command, store, 'subarea-delegate', ids.target, '變更協管'), '\n成員紀錄 #1');
+    assert.equal(f.sent.length, 0);
+    assert.equal(store.listMemberCases(ids.guild, ids.actor)[0]?.action, 'subarea-delegate');
   });
 });
 

@@ -14,7 +14,7 @@ export function punishmentSettingsEmbed(settings: GuildSettings): EmbedBuilder {
       { name: '公告子區／頻道', value: settings.punishmentChannelId ? `<#${settings.punishmentChannelId}>` : '尚未設定', inline: true },
       { name: '處罰私訊與申訴入口', value: settings.punishmentDmEnabled ? '已啟用' : '已停用', inline: true },
       { name: '公告範圍', value: settings.punishmentIncludeSubareas
-        ? '伺服器處罰及子區禁言、移除、解除限制' : '僅伺服器處罰及解除處罰' },
+        ? '伺服器處罰及子區管理操作（禁言、移除、協管、置頂、鎖區等）' : '僅伺服器處罰及解除處罰' },
     ).setFooter({ text: '處罰公告、管理日誌與成員紀錄分別設定；只影響此伺服器。' });
 }
 
@@ -97,7 +97,7 @@ export async function handlePunishmentConfig(command: Command, store: Store): Pr
     ...(includeSubareas === null ? {} : { punishmentIncludeSubareas: includeSubareas }),
   });
   const suffix = await record(command, store, 'config', null, '更新處罰通知設定',
-    `公告 ${settings.punishmentNoticesEnabled ? '啟用' : '停用'}；目標 ${settings.punishmentChannelId ?? '未設定'}；私訊 ${settings.punishmentDmEnabled ? '啟用' : '停用'}；子區處罰 ${settings.punishmentIncludeSubareas ? '包含' : '不包含'}`);
+    `公告 ${settings.punishmentNoticesEnabled ? '啟用' : '停用'}；目標 ${settings.punishmentChannelId ?? '未設定'}；私訊 ${settings.punishmentDmEnabled ? '啟用' : '停用'}；子區管理通知 ${settings.punishmentIncludeSubareas ? '包含' : '不包含'}`);
   await command.editReply({ content: `已更新本伺服器的處罰通知設定。${suffix}`,
     embeds: [punishmentSettingsEmbed(settings)], allowedMentions: noMentions });
 }

@@ -1,23 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ChannelType, Collection, OverwriteType, PermissionFlagsBits as P, PermissionsBitField, type ChatInputCommandInteraction, type Client } from 'discord.js';
+import { ChannelType, Collection, OverwriteType, PermissionFlagsBits as P, PermissionsBitField, type ChatInputCommandInteraction, type Client, type EmbedBuilder } from 'discord.js';
 import { handleSubareaTools, parseSubareaMessage, lockAwareRestrictionBaseline, overlaySubareaLock, LOCK_PERMISSION_BITS, managedAreaOperation, reconcileSubareaLocks, resolveSubareaLockTarget } from '../src/subarea-tools.js';
 import { Store } from '../src/store.js';
 import { handleSubareaCommand } from '../src/subareas.js';
 
 const id = { guild: '400000000000000001', actor: '400000000000000002', bot: '400000000000000003',
   channel: '400000000000000004', target: '400000000000000005', admin: '400000000000000006',
-  message: '400000000000000007', role: '400000000000000008', other: '400000000000000009' };
+  message: '400000000000000007', role: '400000000000000008', other: '400000000000000009',
+  notice: '400000000000000011', log: '400000000000000012' };
 type Overwrite = { id: string; type: OverwriteType; allow: PermissionsBitField; deny: PermissionsBitField };
-type Payload = { content?: string; embeds?: unknown[]; components?: Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }> };
+type Payload = { content?: string; embeds?: EmbedBuilder[]; components?: Array<{ toJSON(): { components: Array<{ custom_id?: string }> } }>;
+  allowedMentions?: { parse: string[] } };
 function fixture(store: Store, action: string, thread = false) {
   const state = { action, actorId: id.actor, message: id.message, name: '新名稱', seconds: 10,
     onFetch: () => {}, onConfirm: (_stage: number) => {}, confirmations: [true, true], confirmationCount: 0,
     privateMembers: new Set<string>([id.actor, id.target]), onPrivateFetch: (_userId: string) => {},
     invokingChannelId: id.channel, selectedChannelId: null as string | null, onChannelFetch: (_channelId: string) => {},
     channelIdInput: null as string | null,
-    failSet: false, failedSet: false, endpointDeleted: false };
+    failSet: false, failedSet: false, endpointDeleted: false, failNotice: false };
   const replies: Payload[] = [];
+  const sent: Array<{ channelId: string; payload: Payload }> = [];
   const counters = { pin: 0, unpin: 0, deleteMessage: 0, deleteChannel: 0, set: 0, edits: 0, outsideWrites: 0 };
   const base = P.ViewChannel | P.ReadMessageHistory | P.SendMessages | P.SendMessagesInThreads | P.AddReactions | P.UseApplicationCommands;
   const members = new Map<string, { id: string; permissions: PermissionsBitField; user: { id: string; bot: boolean }; guild: { ownerId: string } }>();
@@ -67,6 +70,7 @@ function fixture(store: Store, action: string, thread = false) {
     async setName(name: string) { assert.equal(name, state.name); counters.edits++; },
     async edit(options: { locked: boolean; archived: boolean }) { channel.locked = options.locked; channel.archived = options.archived; counters.edits++; },
     async delete() { counters.deleteChannel++; state.endpointDeleted = true; },
+    async send(payload: Payload) { sent.push({ channelId: id.channel, payload }); },
   };
   const outsideCache = new Collection<string, Overwrite>();
   const outside = {
@@ -74,8 +78,19 @@ function fixture(store: Store, action: string, thread = false) {
     guild: { id: id.guild, ownerId: id.admin },
     permissionsFor(subject: { permissions: PermissionsBitField }) { return new PermissionsBitField(subject.permissions.bitfield); },
     permissionOverwrites: { cache: outsideCache, async set() { counters.outsideWrites++; } },
+    async send(payload: Payload) { sent.push({ channelId: id.other, payload }); },
   };
-  const channels = new Map<string, typeof channel | typeof outside>([[channel.id, channel], [outside.id, outside]]);
+  function notificationChannel(channelId: string) {
+    return { ...outside, id: channelId,
+      async send(payload: Payload) {
+        if (channelId === id.notice && state.failNotice) throw Object.assign(new Error('Missing Permissions'), { code: 50013 });
+        sent.push({ channelId, payload });
+      } };
+  }
+  const notice = notificationChannel(id.notice); const log = notificationChannel(id.log);
+  const channels = new Map<string, typeof channel | typeof outside>([
+    [channel.id, channel], [outside.id, outside], [notice.id, notice], [log.id, log],
+  ]);
   const guild = { id: id.guild, ownerId: id.admin,
     roles: { async fetch() {} }, members: {
       async fetch(options: { user: string }) { const result = members.get(options.user); assert.ok(result); return result; },
@@ -103,7 +118,7 @@ function fixture(store: Store, action: string, thread = false) {
     },
   } as unknown as ChatInputCommandInteraction<'cached'>;
   store.setSubarea(id.guild, id.channel, id.actor);
-  return { state, counters, channel, outside, channels, guild, actor, bot, target, admin, command, replies, cache, overwrite };
+  return { state, counters, channel, outside, channels, guild, actor, bot, target, admin, command, replies, sent, cache, overwrite };
 }
 function withStore(run: (store: Store) => Promise<void> | void) {
   return async () => { const store = new Store(':memory:'); try { await run(store); } finally { store.close(); } };
@@ -147,6 +162,103 @@ test('delegates may edit slowmode but cannot grant additional delegates', withSt
   const f = fixture(store, 'slowmode'); store.setSubareaDelegate(id.guild, id.channel, id.target, id.actor);
   f.state.actorId = id.target; await handleSubareaTools(f.command, store); assert.equal(f.channel.rateLimitPerUser, 10);
   f.state.action = 'delegate'; await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者或伺服器管理員/);
+}));
+
+function enableManagementNotices(store: Store) {
+  store.updateSettings(id.guild, { punishmentNoticesEnabled: true, punishmentIncludeSubareas: true,
+    punishmentChannelId: id.notice, logChannelId: id.log });
+}
+
+for (const thread of [false, true]) {
+  const kind = thread ? 'thread' : 'text area';
+  test(`a ${kind} creator delegate grant and revocation announce the correct subject only to the configured destination`, withStore(async (store) => {
+    const f = fixture(store, 'delegate', thread); enableManagementNotices(store);
+    await handleSubareaTools(f.command, store);
+    assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
+    f.state.action = 'undelegate';
+    await handleSubareaTools(f.command, store);
+    assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target), null);
+    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.notice, id.notice]);
+    for (const entry of f.sent) {
+      const embed = entry.payload.embeds?.[0]?.toJSON();
+      assert.match(embed?.title ?? '', /^子區管理通知/);
+      assert.match(embed?.title ?? '', /協管/);
+      const output = JSON.stringify(embed);
+      for (const userId of [id.actor, id.target]) assert.match(output, new RegExp(`<@${userId}>`));
+      assert.match(output, new RegExp(`<#${id.channel}>`));
+      assert.deepEqual(entry.payload.components, [], 'appointing or dismissing a delegate is not an appealable sanction');
+      assert.deepEqual(entry.payload.allowedMentions, { parse: [] });
+    }
+    assert.deepEqual(store.listServerCases(id.guild), []);
+    const records = store.listMemberCases(id.guild, id.actor);
+    assert.deepEqual(records.map((entry) => entry.action), ['subarea-undelegate', 'subarea-delegate']);
+    assert.ok(records.every((entry) => entry.userId === id.target && entry.channelId === id.channel));
+  }));
+
+  test(`an unauthorized or failed ${kind} delegate change cannot produce a success announcement`, withStore(async (store) => {
+    const f = fixture(store, 'delegate', thread); enableManagementNotices(store);
+    store.setSubareaDelegate(id.guild, id.channel, id.target, id.actor);
+    f.state.actorId = id.target;
+    await assert.rejects(handleSubareaTools(f.command, store), /只有子區建立者或伺服器管理員/);
+    f.state.actorId = id.actor;
+    store.setSubareaDelegate = () => { throw new Error('SQLite write failed'); };
+    await assert.rejects(handleSubareaTools(f.command, store), /SQLite write failed/);
+    assert.deepEqual(f.sent, []);
+    assert.deepEqual(store.listCases(id.guild), []);
+  }));
+
+  test(`${kind} pinning and confirmed message deletion notify without fabricating a target member`, withStore(async (store) => {
+    const f = fixture(store, 'pin', thread); enableManagementNotices(store);
+    await handleSubareaTools(f.command, store);
+    f.state.action = 'delete-message';
+    await handleSubareaTools(f.command, store);
+    assert.equal(f.counters.pin, 1); assert.equal(f.counters.deleteMessage, 1);
+    assert.deepEqual(f.sent.map((entry) => entry.channelId), [id.notice, id.notice]);
+    for (const entry of f.sent) {
+      const output = JSON.stringify(entry.payload.embeds?.[0]?.toJSON());
+      assert.match(output, /子區管理通知/);
+      assert.match(output, new RegExp(`<#${id.channel}>`));
+      assert.doesNotMatch(output, /<@null>|<@undefined>/);
+      assert.deepEqual(entry.payload.components, []);
+    }
+    assert.ok(store.listMemberCases(id.guild, id.actor).every((entry) => entry.userId === null));
+    assert.deepEqual(store.listServerCases(id.guild), []);
+  }));
+}
+
+test('management notification failure preserves the successful delegate grant and member record', withStore(async (store) => {
+  const f = fixture(store, 'delegate'); enableManagementNotices(store); f.state.failNotice = true;
+  await handleSubareaTools(f.command, store);
+  assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
+  assert.equal(store.listMemberCases(id.guild, id.actor)[0]?.action, 'subarea-delegate');
+  assert.deepEqual(store.listServerCases(id.guild), []);
+  assert.deepEqual(f.sent, [], 'failed configured destination must not fall back to the source or server log');
+  assert.match(f.replies.at(-1)?.content ?? '', /通知發送失敗/);
+}));
+
+test('child-area managers cannot bypass the server notice switches', withStore(async (store) => {
+  for (const patch of [{ punishmentNoticesEnabled: false }, { punishmentIncludeSubareas: false }]) {
+    const f = fixture(store, 'delegate'); enableManagementNotices(store); store.updateSettings(id.guild, patch);
+    await handleSubareaTools(f.command, store);
+    assert.equal(store.getSubareaDelegate(id.guild, id.channel, id.target)?.grantedBy, id.actor);
+    assert.deepEqual(f.sent, []);
+  }
+  assert.equal(store.listMemberCases(id.guild, id.actor).length, 2);
+  assert.deepEqual(store.listServerCases(id.guild), []);
+}));
+
+test('outside-channel locking announces the selected child area instead of the invoking channel', withStore(async (store) => {
+  const f = fixture(store, 'lock'); enableManagementNotices(store);
+  f.state.invokingChannelId = id.other; f.state.selectedChannelId = id.channel;
+  await handleSubareaTools(f.command, store);
+  assert.ok(store.getSubareaLock(id.guild, id.channel));
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0]?.channelId, id.notice);
+  const output = JSON.stringify(f.sent[0]?.payload.embeds?.[0]?.toJSON());
+  assert.match(output, /子區管理通知/);
+  assert.match(output, new RegExp(`<#${id.channel}>`));
+  assert.doesNotMatch(output, new RegExp(`<#${id.other}>`));
+  assert.equal(store.listMemberCases(id.guild, id.actor)[0]?.channelId, id.channel);
+  assert.deepEqual(store.listServerCases(id.guild), []);
 }));
 
 test('message deletion confirmation rechecks revoked delegate permission', withStore(async (store) => {

@@ -148,7 +148,7 @@ async function configure(command: Command, context: Context, store: Store): Prom
       .addFields(
         { name: '管理紀錄頻道', value: settings.logChannelId ? `<#${settings.logChannelId}>` : '未啟用' },
         { name: '處罰公告', value: `${settings.punishmentNoticesEnabled ? '已啟用' : '已停用'}${settings.punishmentChannelId ? ` · <#${settings.punishmentChannelId}>` : ' · 尚未設定子區'}` },
-        { name: '處罰通知範圍', value: `${settings.punishmentIncludeSubareas ? '包含子區處罰' : '僅伺服器處罰'}；處罰私訊${settings.punishmentDmEnabled ? '開啟' : '關閉'}` },
+        { name: '管理通知範圍', value: `${settings.punishmentIncludeSubareas ? '包含子區管理操作' : '僅伺服器處罰'}；處罰私訊${settings.punishmentDmEnabled ? '開啟' : '關閉'}` },
         { name: '歡迎頻道', value: settings.welcomeChannelId ? `<#${settings.welcomeChannelId}>` : '未啟用' },
         { name: '申訴工單頻道', value: settings.appealChannelId ? `<#${settings.appealChannelId}>` : '未設定；可用 /appeal queue 查看' },
         { name: '子區分類', value: settings.subareaCategoryId ? `<#${settings.subareaCategoryId}>` : '未啟用子區建立' },
