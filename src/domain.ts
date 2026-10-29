@@ -1,3 +1,5 @@
+import { canonicalCommandName } from './command-localizations.js';
+
 export const MANAGEMENT_SCOPES = ['warn', 'timeout', 'kick', 'ban', 'clear'] as const;
 export type ManagementScope = typeof MANAGEMENT_SCOPES[number];
 
@@ -7,7 +9,7 @@ export const SCOPE_LABELS: Record<ManagementScope, string> = {
 };
 
 export function scopeForCommand(name: string): ManagementScope | null {
-  switch (name) {
+  switch (canonicalCommandName(name)) {
     case 'warn': case 'warnings': return 'warn';
     case 'timeout': case 'untimeout': return 'timeout';
     case 'kick': return 'kick';

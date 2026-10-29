@@ -1,5 +1,6 @@
 import { InteractionContextType, Routes, type REST } from 'discord.js';
-import { allCommands, commands } from './commands.js';
+import { allCommands, commands, simplifiedCommands } from './commands.js';
+import { canonicalCommandName } from './command-localizations.js';
 import { ConfigError } from './config.js';
 
 const snowflake = /^[0-9]{17,20}$/;
@@ -34,7 +35,7 @@ export async function registerCommands(
   return allCommands.length;
 }
 
-/** Guild-only deployments still need a global DM entry point for appeals. */
+/** Guild-only deployments still need global DM entries for the primary and Simplified appeal names. */
 export async function registerDmAppeal(
   rest: Pick<REST, 'post'>,
   applicationId: string,
@@ -44,7 +45,10 @@ export async function registerDmAppeal(
   }
   const appeal = commands.find((command) => command.name === 'appeal');
   if (!appeal) throw new ConfigError('找不到申訴指令，請更新完整程式後再試。');
-  await rest.post(Routes.applicationCommands(applicationId), {
-    body: { ...appeal.toJSON(), contexts: [InteractionContextType.BotDM] },
-  });
+  const entries = [appeal, ...simplifiedCommands.filter((command) => canonicalCommandName(command.name) === 'appeal')];
+  for (const entry of entries) {
+    await rest.post(Routes.applicationCommands(applicationId), {
+      body: { ...entry.toJSON(), contexts: [InteractionContextType.BotDM] },
+    });
+  }
 }

@@ -19,7 +19,7 @@ import { handleAdminCommand } from './admin.js';
 import { handleMessageAppCommand } from './message-apps.js';
 import { handleRecordsCommand } from './records.js';
 import { handlePunishmentConfig, handleSubareaNoticeConfig } from './punishment-config.js';
-import { localizeCommandReferences } from './command-localizations.js';
+import { canonicalCommandName, localizeCommandReferences } from './command-localizations.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -223,7 +223,8 @@ async function configure(command: Command, context: Context, store: Store): Prom
 }
 
 async function run(command: Command, store: Store): Promise<void> {
-  if (command.commandName === 'help') {
+  const name = canonicalCommandName(command.commandName);
+  if (name === 'help') {
     const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('伺服器管理助手')
       .setDescription('以 Slash 指令管理伺服器。管理操作會檢查權限與角色階級，並留下案件紀錄。')
       .addFields(
@@ -242,17 +243,17 @@ async function run(command: Command, store: Store): Promise<void> {
     await command.editReply({ embeds: [embed] });
     return;
   }
-  if (command.commandName === 'ping') {
+  if (name === 'ping') {
     await command.editReply(`機器人運作中。Gateway 延遲：${command.client.ws.ping < 0 ? '計算中' : `${command.client.ws.ping} ms`}。`);
     return;
   }
   let context = await getContext(command, store);
-  if (command.commandName === 'config') return configure(command, context, store);
-  if (command.commandName === 'access') return handleAccessCommand(command, store);
-  if (command.commandName === 'subarea') return handleSubareaCommand(command, store);
-  if (command.commandName === 'admin') return handleAdminCommand(command, store);
-  if (command.commandName === 'records') return handleRecordsCommand(command, store);
-  if (command.commandName === 'warnings') {
+  if (name === 'config') return configure(command, context, store);
+  if (name === 'access') return handleAccessCommand(command, store);
+  if (name === 'subarea') return handleSubareaCommand(command, store);
+  if (name === 'admin') return handleAdminCommand(command, store);
+  if (name === 'records') return handleRecordsCommand(command, store);
+  if (name === 'warnings') {
     const user = command.options.getUser('user', true);
     const warnings = store.listWarnings(command.guildId, user.id, 10);
     const total = store.countWarnings(command.guildId, user.id);
@@ -264,7 +265,7 @@ async function run(command: Command, store: Store): Promise<void> {
       .setFooter({ text: `共 ${total} 筆，顯示最近 ${warnings.length} 筆` })], allowedMentions: noMentions });
     return;
   }
-  if (command.commandName === 'clear') {
+  if (name === 'clear') {
     let channel = textChannel(context.channel);
     const required = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages];
     assertPermissions(requireBotPermissions(context.bot, channel, required));
@@ -288,7 +289,7 @@ async function run(command: Command, store: Store): Promise<void> {
     await command.editReply({ content: `已完成清理請求，本次送出 ${deleted.size} 則訊息。超過時限或已刪除的訊息會略過。${suffix}`, components: [] });
     return;
   }
-  if (command.commandName === 'unban') {
+  if (name === 'unban') {
     assertPermissions(requireBotPermissions(context.bot, null, [PermissionFlagsBits.BanMembers]));
     const userId = command.options.getString('user_id', true).trim();
     if (!/^\d{17,20}$/.test(userId)) throw new UserError('使用者 ID 必須是 17 至 20 位數字。');
@@ -298,7 +299,7 @@ async function run(command: Command, store: Store): Promise<void> {
     await command.editReply({ content: `已解除 <@${userId}> 的封鎖。${suffix}`, allowedMentions: noMentions });
     return;
   }
-  const action = command.commandName;
+  const action = name;
   if (!['warn', 'timeout', 'untimeout', 'kick', 'ban'].includes(action)) {
     throw new UserError('找不到此指令，請重新註冊指令。');
   }
@@ -366,7 +367,7 @@ export async function handleInteraction(interaction: Interaction, store: Store):
       await handleAppealInteraction(interaction, store);
       return;
     }
-    if (interaction.commandName === 'appeal') {
+    if (canonicalCommandName(interaction.commandName) === 'appeal') {
       await handleAppealCommand(interaction, store);
       return;
     }

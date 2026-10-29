@@ -122,7 +122,7 @@ function fixture(commandName: string, confirmation: Confirmation = 'confirm') {
   };
   return {
     interaction: command as unknown as Interaction,
-    actor, issuer, target, counters, channel, messages, edits, deferOptions, deletedSnapshots, fetchLimits, state, events,
+    actor, issuer, target, bot, counters, channel, messages, edits, deferOptions, deletedSnapshots, fetchLimits, state, events,
     finalReply: () => edits.at(-1) as Reply,
   };
 }
@@ -140,12 +140,12 @@ test('warn rejects an actor without permission before writing a warning or case'
   } finally { store.close(); }
 });
 
-test('help displays command references in the Discord client language', async () => {
+test('help uses consistent Traditional Chinese references in either Chinese Discord interface', async () => {
   const store = new Store(':memory:');
   try {
     for (const [locale, delegate, settings] of [
       ['zh-TW', '/子區 設定協管', '/設定 子區通知'],
-      ['zh-CN', '/子区 设置协管', '/设置 子区通知'],
+      ['zh-CN', '/子區 設定協管', '/設定 子區通知'],
       ['en-US', '/subarea delegate', '/config subarea-notices'],
     ]) {
       const f = fixture('help');
@@ -173,6 +173,99 @@ test('localized Discord command presentation retains canonical moderation routin
     await handleInteraction(f.interaction, store);
     assert.equal(store.countWarnings(ids.guild, ids.target), 1);
     assert.match(f.finalReply().content ?? '', /沒有.*權限/);
+  } finally { store.close(); }
+});
+
+test('Simplified ban entry follows confirmation, stores canonical cases and honors permission revocation', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('封禁');
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.counters.bans, 1);
+    assert.equal(store.listCases(ids.guild)[0]?.action, 'ban');
+    assert.equal(store.listCases(ids.guild)[0]?.scope, 'server');
+    assert.match(f.finalReply().content ?? '', /已封鎖/);
+    const revoked = fixture('封禁');
+    revoked.state.onConfirmation = () => revoked.actor.permissions.remove(PermissionFlagsBits.BanMembers);
+    await handleInteraction(revoked.interaction, store);
+    assert.equal(revoked.counters.bans, 0);
+    assert.equal(revoked.counters.notices, 0);
+    assert.equal(store.listCases(ids.guild).length, 1);
+    assert.match(revoked.finalReply().content ?? '', /沒有.*權限/);
+  } finally { store.close(); }
+});
+
+test('Simplified cleanup entry preserves scoped grants and channel permission checks', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('清理消息');
+    f.actor.permissions.remove(PermissionFlagsBits.ManageMessages);
+    store.setGrant(ids.guild, ids.actor, 'clear', ids.issuer);
+    await handleInteraction(f.interaction, store);
+    assert.equal(f.deletedSnapshots.length, 1);
+    assert.equal(store.listCases(ids.guild)[0]?.action, 'clear');
+    const denied = fixture('清理消息');
+    denied.actor.permissions.remove([PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ReadMessageHistory]);
+    await handleInteraction(denied.interaction, store);
+    assert.equal(denied.deletedSnapshots.length, 0);
+    assert.match(denied.finalReply().content ?? '', /缺少查看頻道、讀取歷史/);
+    assert.equal(store.listCases(ids.guild).length, 1);
+  } finally { store.close(); }
+});
+
+test('Simplified configuration and permission administration entries cannot borrow moderation grants', async () => {
+  const store = new Store(':memory:');
+  try {
+    for (const scope of ['warn', 'timeout', 'kick', 'ban', 'clear'] as const) store.setGrant(ids.guild, ids.actor, scope, ids.issuer);
+    for (const alias of ['设置', '管理员', '管理授权']) {
+      const f = fixture(alias);
+      await handleInteraction(f.interaction, store);
+      assert.match(f.finalReply().content ?? '', /沒有.*權限/);
+      assert.equal(f.counters.targetRefreshes, 0);
+    }
+    assert.deepEqual(store.listCases(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('Simplified child-area entry invokes the same owner-only authorization checks', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('子区');
+    Object.assign(f.interaction, { locale: 'zh-CN' });
+    Object.assign(f.channel, { guildId: ids.guild });
+    Object.assign((f.interaction as unknown as { options: object }).options, {
+      getSubcommand: () => 'pin', getChannel: () => null,
+    });
+    // The source is registered, but this caller is not its creator or delegate.
+    store.setSubarea(ids.guild, ids.channel, ids.issuer);
+    await handleInteraction(f.interaction, store);
+    assert.match(f.finalReply().content ?? '', /只有目前子區建立者/);
+    assert.doesNotMatch(f.finalReply().content ?? '', /找不到此指令/);
+    assert.deepEqual(store.listCases(ids.guild), []);
+  } finally { store.close(); }
+});
+
+test('Simplified child-area delegation executes once and sends a Traditional notice inside the area', async () => {
+  const store = new Store(':memory:');
+  try {
+    const f = fixture('子区');
+    const notices: unknown[] = [];
+    Object.assign(f.interaction, { locale: 'zh-CN' });
+    Object.assign(f.channel, { guildId: ids.guild, async send(payload: unknown) { notices.push(payload); } });
+    Object.assign((f.interaction as unknown as { options: object }).options, {
+      getSubcommand: () => 'delegate', getChannel: () => null,
+    });
+    f.target.permissions.add(PermissionFlagsBits.ViewChannel);
+    f.bot.permissions.add([PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.SendMessages]);
+    store.setSubarea(ids.guild, ids.channel, ids.actor);
+    await handleInteraction(f.interaction, store);
+    assert.equal(store.getSubareaDelegate(ids.guild, ids.channel, ids.target)?.grantedBy, ids.actor);
+    assert.equal(store.listCases(ids.guild).length, 1);
+    assert.equal(store.listCases(ids.guild)[0]?.action, 'subarea-delegate');
+    assert.equal(store.listServerCases(ids.guild).length, 0);
+    assert.equal(notices.length, 1);
+    assert.match(JSON.stringify(notices), /子區管理通知|授予子區協管/);
+    assert.match(f.finalReply().content ?? '', /已授予/);
   } finally { store.close(); }
 });
 

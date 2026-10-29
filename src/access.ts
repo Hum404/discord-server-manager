@@ -8,6 +8,7 @@ import { MANAGEMENT_SCOPES, SCOPE_LABELS, scopeForCommand, type ManagementScope 
 import { UserError } from './errors.js';
 import { truncate } from './presentation.js';
 import { Store } from './store.js';
+import { canonicalCommandName } from './command-localizations.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 
@@ -27,15 +28,16 @@ export async function resolveModerationAuthority(
   channel: GuildBasedChannel | null,
   store: Store,
 ): Promise<ModerationAuthority> {
-  const required = command.commandName === 'access'
-    ? PermissionFlagsBits.Administrator : permissionForCommand(command.commandName);
+  const name = canonicalCommandName(command.commandName);
+  const required = name === 'access'
+    ? PermissionFlagsBits.Administrator : permissionForCommand(name);
   if (required === null || nativeAdministrator(actor, command.guild.ownerId)) {
     return { authority: actor, delegated: false };
   }
-  const permissions = command.commandName === 'clear' ? channel?.permissionsFor(actor) : actor.permissions;
+  const permissions = name === 'clear' ? channel?.permissionsFor(actor) : actor.permissions;
   if (permissions?.has(required)) return { authority: actor, delegated: false };
 
-  const scope = scopeForCommand(command.commandName);
+  const scope = scopeForCommand(name);
   const grant = scope ? store.getGrant(command.guildId, actor.id, scope) : null;
   if (!scope || !grant) throw new UserError('你目前沒有執行此指令所需的權限或管理授權。');
 

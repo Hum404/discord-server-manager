@@ -9,9 +9,10 @@ import {
   PermissionFlagsBits,
 } from 'discord.js';
 import {
-  allCommands, commands, messageCommands, permissionForCommand,
+  allCommands, commands, simplifiedCommands, messageCommands, permissionForCommand,
   MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME,
 } from '../src/commands.js';
+import { canonicalCommandName } from '../src/command-localizations.js';
 
 const serialized = commands.map((command) => command.toJSON());
 
@@ -52,7 +53,7 @@ test('serializes the command allowlist with appeals available in bot DMs', () =>
 test('message APP actions target selected messages and retain runtime channel authorization', () => {
   const menus = messageCommands.map((command) => command.toJSON());
   assert.deepEqual(menus.map((command) => command.name), [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME]);
-  assert.equal(allCommands.length, commands.length + 2);
+  assert.equal(allCommands.length, commands.length + simplifiedCommands.length + 2);
   assert.equal(commands.length, 16, 'slash commands include the member-record query');
   for (const menu of menus) {
     assert.equal(menu.type, ApplicationCommandType.Message);
@@ -96,6 +97,27 @@ test('delegatable management commands remain visible while preserving runtime pe
   }
   assert.equal(permissionForCommand('not-a-command'), null);
   assert.equal(permissionForCommand('constructor'), null);
+});
+
+test('Simplified search entries retain their canonical native permissions and invocation contexts', () => {
+  assert.ok(simplifiedCommands.length > 0);
+  assert.ok(commands.length + simplifiedCommands.length <= 100, 'registered slash commands remain below Discord limits');
+  const primaryNames = new Set(commands.map((command) => command.toJSON().name_localizations?.['zh-TW']));
+  const aliases = new Set<string>();
+  for (const command of simplifiedCommands) {
+    const alias = command.toJSON();
+    const canonical = canonicalCommandName(alias.name);
+    const original = commands.find((entry) => entry.name === canonical)?.toJSON();
+    assert.ok(original, `Unknown Simplified command ${alias.name}`);
+    assert.ok(!primaryNames.has(alias.name), 'identical Simplified and Traditional roots must not create colliding entries');
+    assert.ok(!aliases.has(alias.name));
+    aliases.add(alias.name);
+    assert.equal(alias.default_member_permissions, original.default_member_permissions);
+    assert.deepEqual(alias.contexts, original.contexts);
+    assert.equal(permissionForCommand(alias.name), permissionForCommand(canonical));
+    assert.deepEqual(alias.options?.map((option) => [option.name, option.type]),
+      original.options?.map((option) => [option.name, option.type]), 'subcommands and options keep stable canonical routing names');
+  }
 });
 
 test('member moderation requires a target and a bounded reason', () => {
@@ -346,7 +368,7 @@ test('lock and unlock accept optional text or thread targets for recovery from a
     assert.equal(fallback.max_length, 200);
     assert.match(getOption('subarea', action).description, /其他頻道/);
   }
-  assert.equal(allCommands.length, 18);
+  assert.equal(allCommands.length, commands.length + simplifiedCommands.length + 2);
   assert.equal(messageCommands.length, 2);
   assert.ok(messageCommands.every((command) => command.toJSON().type === ApplicationCommandType.Message));
 });

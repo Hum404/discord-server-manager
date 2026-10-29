@@ -8,7 +8,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import { MANAGEMENT_SCOPES, SCOPE_LABELS, scopeForCommand } from './domain.js';
-import { localizeMessageCommand, localizeSlashCommand } from './command-localizations.js';
+import { canonicalCommandName, createSimplifiedCommandDefinition, localizeMessageCommand, localizeSlashCommand } from './command-localizations.js';
 
 const commandPermissions: Record<string, bigint> = {
   warn: PermissionFlagsBits.ModerateMembers,
@@ -25,7 +25,8 @@ const commandPermissions: Record<string, bigint> = {
 };
 
 export function permissionForCommand(commandName: string): bigint | null {
-  return Object.hasOwn(commandPermissions, commandName) ? commandPermissions[commandName] ?? null : null;
+  const canonical = canonicalCommandName(commandName);
+  return Object.hasOwn(commandPermissions, canonical) ? commandPermissions[canonical] ?? null : null;
 }
 
 function command(name: string, description: string): SlashCommandBuilder {
@@ -482,4 +483,11 @@ export const messageCommands = [MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME].m
 for (const builder of commands) localizeSlashCommand(builder);
 for (const builder of messageCommands) localizeMessageCommand(builder);
 
-export const allCommands = [...commands, ...messageCommands];
+/** Separate search entries keep the primary command list and execution schema unchanged. */
+export const simplifiedCommands = commands.flatMap((builder) => {
+  const definition = createSimplifiedCommandDefinition(builder.toJSON());
+  if (!definition) return [];
+  return [{ name: definition.name, toJSON: () => structuredClone(definition) }];
+});
+
+export const allCommands = [...commands, ...simplifiedCommands, ...messageCommands];

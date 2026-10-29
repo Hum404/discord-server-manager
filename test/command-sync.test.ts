@@ -5,7 +5,7 @@ import {
   listBotGuilds, readCommandState, syncCommandState,
   type CommandState, type SavedCommand,
 } from '../src/command-sync.js';
-import { allCommands, messageCommands, MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME } from '../src/commands.js';
+import { allCommands, simplifiedCommands, messageCommands, MESSAGE_APP_PIN_NAME, MESSAGE_APP_DELETE_NAME } from '../src/commands.js';
 import { ConfigError } from '../src/config.js';
 
 const appId = '123456789012345678';
@@ -147,6 +147,36 @@ test('guild sync preserves supported message identities and prunes same-name com
     [[ApplicationCommandType.Message, MESSAGE_APP_PIN_NAME], [ApplicationCommandType.Message, MESSAGE_APP_DELETE_NAME]]);
   const menus = snapshot().guild.filter((entry) => entry.type === ApplicationCommandType.Message);
   assert.deepEqual(menus.map((entry) => entry.name), messageCommands.map((entry) => entry.name));
+});
+
+test('guild sync preserves supported Simplified command identities instead of pruning them as legacy names', async () => {
+  const alias = simplifiedCommands.find((entry) => entry.name === '子区');
+  assert.ok(alias);
+  const saved: CommandState = {
+    global: [apiCommand(alias.toJSON(), 100), command(101, 'old-child-area')],
+    guild: [],
+  };
+  const { rest, calls, snapshot } = mockState(saved);
+  const result = await syncCommandState(rest, appId, guildId, saved, true);
+  assert.equal(result.registered, allCommands.length);
+  assert.equal(result.removedGlobal, 1);
+  assert.deepEqual(calls.filter((call) => call.method === 'DELETE').map((call) => call.route),
+    [Routes.applicationCommand(appId, saved.global[1]!.id)]);
+  assert.deepEqual(snapshot().global.map((entry) => entry.name), ['子区']);
+  assert.ok(snapshot().guild.some((entry) => entry.name === '子区'));
+  assert.ok(snapshot().guild.some((entry) => entry.name === 'subarea'));
+});
+
+test('same-name Simplified entries with stale subcommand labels cannot pass synchronization verification', async () => {
+  for (const guildOnly of [false, true]) {
+    const saved: CommandState = { global: [], guild: [] };
+    const { rest } = mockState(saved);
+    const active = currentCommands(guildOnly);
+    const delegate = namedOption(namedCommand(active, '子区'), 'delegate');
+    delegate.name_localizations = { 'zh-CN': 'outdated-label', 'zh-TW': 'outdated-label' };
+    rest.get = async (route) => route === globalRoute ? guildOnly ? [] : active : guildOnly ? active : [];
+    await assert.rejects(syncCommandState(rest, appId, guildId, saved, guildOnly), ConfigError);
+  }
 });
 
 test('verification rejects current message APP actions returned with a stale command type', async () => {

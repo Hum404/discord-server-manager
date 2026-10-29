@@ -1,6 +1,6 @@
 import {
-  SlashCommandStringOption, SlashCommandSubcommandBuilder, SlashCommandSubcommandGroupBuilder,
-  type ContextMenuCommandBuilder, type LocalizationMap,
+  ApplicationCommandOptionType, SlashCommandStringOption, SlashCommandSubcommandBuilder, SlashCommandSubcommandGroupBuilder,
+  type ContextMenuCommandBuilder, type LocalizationMap, type SlashCommandBuilder,
 } from 'discord.js';
 
 type ChineseNames = readonly [traditional: string, simplified: string];
@@ -86,6 +86,21 @@ const messageCommandNames: Record<string, ChineseNames> = {
   '刪除訊息': ['刪除訊息', '删除消息'],
 };
 
+// Discord exposes no hidden search aliases. Distinct Simplified root entries
+// use the same canonical subcommand/options and the same execution policy.
+const simplifiedRoots = new Map(Object.entries(commandNames)
+  .filter(([, names]) => names[0] !== names[1])
+  .map(([canonical, names]) => [names[1], canonical]));
+
+export function canonicalCommandName(name: string): string {
+  return simplifiedRoots.get(name) ?? name;
+}
+
+export function simplifiedCommandName(canonical: string): string | null {
+  const names = namesAt(commandNames, canonical);
+  return names && names[0] !== names[1] ? names[1] : null;
+}
+
 interface NamedBuilder {
   readonly name: string;
   readonly options?: readonly unknown[];
@@ -99,7 +114,41 @@ function namesAt(dictionary: Record<string, ChineseNames>, key: string): Chinese
 
 function localization(names: ChineseNames | undefined, path: string): LocalizationMap {
   if (!names) throw new Error(`Missing Chinese command localization: ${path}`);
-  return { 'zh-TW': names[0], 'zh-CN': names[1] };
+  // Keep both vocabularies available while presenting consistent Traditional labels.
+  return { 'zh-TW': names[0], 'zh-CN': names[0] };
+}
+
+type SlashDefinition = ReturnType<SlashCommandBuilder['toJSON']>;
+interface DefinitionNode {
+  name: string;
+  type?: number;
+  name_localizations?: LocalizationMap | null;
+  options?: DefinitionNode[];
+  choices?: Array<{ name: string; name_localizations?: LocalizationMap | null }>;
+}
+
+/** Clone a compatibility entry without changing builders, permission bits or choice values. */
+export function createSimplifiedCommandDefinition(definition: SlashDefinition): SlashDefinition | null {
+  const alias = simplifiedCommandName(definition.name);
+  if (alias === null) return null;
+  const copy = structuredClone(definition);
+  function localize(node: DefinitionNode, path: string, root = false): void {
+    const subcommand = node.type === ApplicationCommandOptionType.Subcommand
+      || node.type === ApplicationCommandOptionType.SubcommandGroup;
+    const names = root ? namesAt(commandNames, path) : subcommand ? namesAt(subcommandNames, path)
+      : namesAt(optionOverrides, path) ?? namesAt(optionNames, node.name);
+    if (!names) throw new Error(`Missing Simplified command localization: ${path}`);
+    node.name_localizations = { ...node.name_localizations, 'zh-TW': names[1], 'zh-CN': names[1] };
+    for (const choice of node.choices ?? []) {
+      const choiceName = namesAt(choiceNames, choice.name);
+      if (!choiceName) throw new Error(`Missing Simplified command choice: ${path}:${choice.name}`);
+      choice.name_localizations = { ...choice.name_localizations, 'zh-TW': choiceName[1], 'zh-CN': choiceName[1] };
+    }
+    for (const child of node.options ?? []) localize(child, `${path}.${child.name}`);
+  }
+  localize(copy as unknown as DefinitionNode, definition.name, true);
+  copy.name = alias;
+  return copy;
 }
 
 function namedBuilder(value: unknown): NamedBuilder {
@@ -140,7 +189,7 @@ export function localizeMessageCommand(builder: ContextMenuCommandBuilder): void
 
 /** Translate controlled help references while keeping unknown paths and non-Chinese locales intact. */
 export function localizeCommandReferences(text: string, locale: string): string {
-  const index = locale === 'zh-TW' ? 0 : locale === 'zh-CN' ? 1 : null;
+  const index = locale === 'zh-TW' || locale === 'zh-CN' ? 0 : null;
   if (index === null) return text;
   return text.replace(/\/([a-z][a-z0-9_-]*)(?:([ \t]+)([a-z][a-z0-9_-]*))?/g,
     (original, root: string, separator: string | undefined, child: string | undefined) => {
