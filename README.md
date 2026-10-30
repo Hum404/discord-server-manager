@@ -2,6 +2,13 @@
 
 使用 TypeScript、discord.js 14 與 SQLite 製作，主要指令、參數、說明及回覆使用繁體中文，並保留可搜尋及使用的簡體指令入口。支援逐項管理授權、可配置的處罰公告與預設開啟的子區內管理通知、處罰私訊與申訴工單、文字頻道／討論串／論壇子區、子區協管與置頂管理、警告、禁言、踢出、封鎖、訊息清理及歡迎訊息。伺服器處罰日誌與成員操作紀錄分開查詢。支援 Slash Commands 與訊息「APP」選單，不需要 Message Content Intent。
 
+## 隱私與服務條款
+
+- [隱私政策](PRIVACY_POLICY.md)：資料用途、通知可見範圍、保存方式及資料權利請求。
+- [服務條款](TERMS_OF_SERVICE.md)：使用資格、管理責任、申訴、功能限制及服務規則。
+
+兩份文件均為公開頁面，可將其 GitHub 頁面網址填入 Discord Developer Portal 的 Privacy Policy URL 與 Terms of Service URL。自行架設的營運者應提供實際聯絡方式、資料存放與保存安排，並在有不同處理方式時發布自己的政策。
+
 ## 環境需求
 
 - Node.js **24 或以上**、npm。
