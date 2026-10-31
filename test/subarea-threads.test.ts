@@ -52,6 +52,7 @@ function fixture(store: Store, action = 'mute', registered = true) {
   function thread(id: string, type = ChannelType.PublicThread) {
     return {
       id, type, guildId: ids.guild, guild: undefined as unknown, ownerId: ids.actor as string,
+      locked: false, archived: false,
       parentId: ids.parent, parent: undefined as unknown,
       permissionsFor(subject: FakeMember) { return subject.permissions; },
       members: {
@@ -330,6 +331,45 @@ test('creator transfer during thread tag member lookup blocks the outgoing notif
     f.state.onMemberFetch = (userId) => { if (userId === ids.target) store.setSubarea(ids.guild, f.current.id, ids.other); };
     await assert.rejects(handleThreadSubarea(f.command, store), /只有目前子區建立者/);
     assert.equal(f.counters.sent, 0);
+  });
+});
+
+test('a creator cannot use local Bot management to bypass an administrative thread lock', async () => {
+  await withStore(async (store) => {
+    for (const action of ['tag', 'role-tag', 'announce', 'mute']) {
+      const f = fixture(store, action);
+      store.setSubareaLock(ids.guild, f.current.id, '[]', ids.other,
+        { mode: 'thread-native', source: 'admin' });
+      f.current.locked = true; f.current.archived = true;
+      await assert.rejects(handleThreadSubarea(f.command, store), /管理員鎖定|管理員解除/);
+      assert.equal(f.counters.sent, 0);
+      assert.equal(f.counters.removed, 0);
+      assert.deepEqual(store.listCases(ids.guild), []);
+      assert.ok(store.getSubareaLock(ids.guild, f.current.id));
+    }
+  });
+});
+
+test('mention commands cannot implicitly reopen a closed thread even for an administrator creator', async () => {
+  await withStore(async (store) => {
+    const f = fixture(store, 'tag');
+    f.actor.permissions.add(PermissionFlagsBits.Administrator);
+    f.current.archived = true; f.current.locked = true;
+    await assert.rejects(handleThreadSubarea(f.command, store), /先明確解鎖/);
+    assert.equal(f.counters.sent, 0);
+    assert.equal(f.current.archived, true);
+    assert.equal(f.current.locked, true);
+    assert.deepEqual(store.listCases(ids.guild), []);
+  });
+});
+
+test('native closure during mention target lookup prevents the pending Bot post', async () => {
+  await withStore(async (store) => {
+    const f = fixture(store, 'tag');
+    f.state.onMemberFetch = (userId) => { if (userId === ids.target) f.current.archived = true; };
+    await assert.rejects(handleThreadSubarea(f.command, store), /先明確解鎖/);
+    assert.equal(f.counters.sent, 0);
+    assert.deepEqual(store.listCases(ids.guild), []);
   });
 });
 

@@ -10,7 +10,7 @@ import { logFailure, UserError } from './errors.js';
 import { requireBotPermissions, requirePrivateThreadAccess } from './permissions.js';
 import { truncate } from './presentation.js';
 import { Store, type Subarea } from './store.js';
-import { managedAreaOperation, type AreaInteraction } from './subarea-tools.js';
+import { assertSubareaLockAllowsManagement, managedAreaOperation, type AreaInteraction } from './subarea-tools.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type ManagedThread = PublicThreadChannel | PrivateThreadChannel;
@@ -76,6 +76,7 @@ async function context(command: Command, store: Store, creatorOnly = false): Pro
   if (!area) throw new UserError('此討論串尚未登記，請由原建立者使用指令，或請管理員指派。');
   const result = { actor, bot, channel, area };
   result.area = assertAuthority(result, command, store, creatorOnly);
+  assertSubareaLockAllowsManagement(channel, actor, store);
   return result;
 }
 
@@ -201,6 +202,9 @@ async function tag(command: Command, store: Store, kind: 'tag' | 'role-tag' | 'a
   botPermissions(current.bot, current.channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessagesInThreads,
     ...(kind === 'tag' ? [] : [PermissionFlagsBits.MentionEveryone])]);
   assertAuthority(current, command, store, true);
+  if (current.channel.locked || current.channel.archived) {
+    throw new UserError('此討論串已鎖定或封存，請先明確解鎖後再發送提及通知。');
+  }
   await current.channel.send({ content, allowedMentions });
   const now = Date.now();
   lastTag.set(key, now);
@@ -337,13 +341,14 @@ export async function createThreadSubarea(command: Command, store: Store): Promi
   });
 }
 
-type ReactiveRestriction = { member: GuildMember; muted: boolean; locked: boolean };
+type ReactiveRestriction = { member: GuildMember };
 
 async function restrictedMember(channel: ThreadChannel, userId: string, store: Store): Promise<ReactiveRestriction | null> {
   const area = store.getSubarea(channel.guildId, channel.id);
   const restriction = store.getSubareaRestriction(channel.guildId, channel.id, userId);
-  const locked = store.getSubareaLock(channel.guildId, channel.id) !== null;
-  if (!area || area.ownerId === userId || (!restriction?.muted && !locked)) return null;
+  // Area locks now use Discord's native lock/archive flags. Only individual
+  // thread mutes need reactive deletion while the Bot is online.
+  if (!area || area.ownerId === userId || !restriction?.muted) return null;
   let member: GuildMember;
   try {
     // GuildMember.permissions reads role objects from the guild cache. Refresh both
@@ -358,9 +363,8 @@ async function restrictedMember(channel: ThreadChannel, userId: string, store: S
     || member.permissions.has(PermissionFlagsBits.ManageGuild)) return null;
   const current = store.getSubarea(channel.guildId, channel.id);
   const muted = store.getSubareaRestriction(channel.guildId, channel.id, userId)?.muted === true;
-  const stillLocked = store.getSubareaLock(channel.guildId, channel.id) !== null;
-  if (!current || current.ownerId === userId || (!muted && !stillLocked)) return null;
-  return { member, muted, locked: stillLocked };
+  if (!current || current.ownerId === userId || !muted) return null;
+  return { member };
 }
 
 export async function handleSubareaThreadMessage(message: Message, store: Store): Promise<void> {
@@ -375,9 +379,7 @@ export async function handleSubareaThreadMessage(message: Message, store: Store)
     if (now - (lastNotice.get(key) ?? 0) >= 60_000) {
       lastNotice.set(key, now);
       if (lastNotice.size > 2000) for (const [saved, time] of lastNotice) if (now - time >= 60_000) lastNotice.delete(saved);
-      const explanation = restriction.muted
-        ? `你目前在子區 <#${message.channel.id}> 被禁言，新訊息已刪除。其他頻道不受影響；可使用 /appeal 提交處罰申訴。`
-        : `子區 <#${message.channel.id}> 已鎖定，只有建立者與管理員可發言；你的新訊息已刪除。其他頻道不受影響。`;
+      const explanation = `你目前在子區 <#${message.channel.id}> 被禁言，新訊息已刪除。其他頻道不受影響；可使用 /appeal 提交處罰申訴。`;
       try { await member.send({ content: explanation, allowedMentions: noMentions }); }
       catch (error) { logFailure('討論串禁言提示私訊失敗', error); }
     }

@@ -11,7 +11,7 @@ import { requireBotPermissions } from './permissions.js';
 import { truncate } from './presentation.js';
 import { Store, type Subarea, type SubareaRestriction } from './store.js';
 import {
-  handleSubareaTools, lockAwareRestrictionBaseline, managedAreaOperation,
+  assertSubareaLockAllowsManagement, handleSubareaTools, lockAwareRestrictionBaseline, managedAreaOperation,
   overlaySubareaLock, resolveSubareaLockTarget,
 } from './subarea-tools.js';
 import { createThreadSubarea, ensureThreadArea, handleThreadSubarea } from './subarea-threads.js';
@@ -82,6 +82,7 @@ function currentArea(command: Command, store: Store, current: Context, creatorOn
   if (!current.channel.permissionsFor(current.actor).has(PermissionFlagsBits.ViewChannel)) {
     throw new UserError('你目前無法查看此子區。');
   }
+  assertSubareaLockAllowsManagement(current.channel, current.actor, store);
   return { area, channel: current.channel };
 }
 

@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder,
   PermissionFlagsBits, escapeMarkdown,
-  type ChatInputCommandInteraction, type Guild, type MessageContextMenuCommandInteraction,
+  type Guild,
   type NewsChannel, type TextChannel, type ThreadChannel,
 } from 'discord.js';
 import { APPEALABLE_ACTIONS } from './domain.js';
@@ -9,9 +9,10 @@ import { MANAGEMENT_NOTICE_ACTIONS, SUBAREA_NOTICE_ACTIONS } from './notificatio
 import { logFailure, UserError } from './errors.js';
 import { requireBotPermissions, requirePrivateThreadAccess } from './permissions.js';
 import { truncate } from './presentation.js';
-import type { GuildSettings, ModerationCase, Store } from './store.js';
+import type { GuildSettings, ModerationCase, Store, SubareaLock } from './store.js';
+import type { AuditContext } from './audit.js';
 
-type Command = ChatInputCommandInteraction<'cached'> | MessageContextMenuCommandInteraction<'cached'>;
+type Command = AuditContext;
 type NoticeChannel = TextChannel | NewsChannel | ThreadChannel;
 
 const serverActions = new Set<string>(MANAGEMENT_NOTICE_ACTIONS);
@@ -79,6 +80,53 @@ function shouldSend(settings: GuildSettings, entry: ModerationCase, store: Store
     return store.isNotificationActionEnabled(entry.guildId, local ? 'subarea' : 'management', entry.action);
   } catch (error) {
     throw new NotificationFilterError('Unable to read notification action settings.', { cause: error });
+  }
+}
+
+function nativeLockNoticeEnabled(store: Store, guildId: string): boolean {
+  try {
+    return store.getSettings(guildId).subareaNoticesEnabled
+      && store.isNotificationActionEnabled(guildId, 'subarea', 'subarea-lock');
+  } catch (error) {
+    throw new NotificationFilterError('Unable to read native lock notification settings.', { cause: error });
+  }
+}
+
+/** Announce an intention before native closure; delivery never changes thread state. */
+export async function deliverNativeSubareaLockNotice(
+  command: AuditContext, store: Store, channelId: string, source: SubareaLock['source'],
+): Promise<{ sentChannelId: string | null; warning: string; filterFailed?: boolean }> {
+  const skipped = { sentChannelId: null, warning: '' };
+  try {
+    if (command.guild.id !== command.guildId) throw new UserError('子區鎖定通知的伺服器不符。');
+    if (!nativeLockNoticeEnabled(store, command.guildId)) return skipped;
+    const sourceLabels: Record<SubareaLock['source'], string> = {
+      owner: '建立者自行鎖定', delegate: '協管鎖定', admin: '管理員處分鎖定', legacy: '舊版鎖定（來源未確認）',
+    };
+    const label = sourceLabels[source];
+    if (!label) throw new UserError('無法確認子區鎖定的來源。');
+    const channel = await punishmentNoticeTarget(command.guild, channelId);
+    if (!isThread(channel)) throw new UserError('原生鎖定通知僅適用於討論串或論壇帖子。');
+    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('子區鎖定申請')
+      .setDescription('管理者已要求鎖定並封存此子區。接下來將執行原生鎖定；是否完成請以實際鎖定狀態及操作結果為準。')
+      .addFields(
+        { name: '操作子區', value: `<#${channelId}>` },
+        { name: '執行者', value: `<@${command.user.id}>（${command.user.id}）` },
+        { name: '鎖定來源', value: label },
+        { name: '如何解鎖', value: `${source === 'admin' || source === 'legacy' ? '須由伺服器管理員處理。' : '建立者可查看私訊解鎖入口，或從本伺服器其他可用頻道操作。'}\n子區 ID：${channelId}\n使用「/子區 解鎖」並指定此子區。` },
+      ).setTimestamp();
+    // The destination fetch and private membership check can yield to a settings change.
+    if (!nativeLockNoticeEnabled(store, command.guildId)) return skipped;
+    if (channel.archived || channel.locked) throw new UserError('子區已鎖定或封存，無法發送鎖定前公告。');
+    await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    return { sentChannelId: channel.id, warning: '' };
+  } catch (error) {
+    if (error instanceof NotificationFilterError) {
+      logFailure('子區鎖定通知項目讀取失敗', error);
+      return { sentChannelId: null, warning: '\n⚠️ 子區鎖定通知設定讀取失敗，未發送區內公告。', filterFailed: true };
+    }
+    logFailure('子區鎖定前公告發送失敗', error);
+    return { sentChannelId: null, warning: '\n⚠️ 子區內鎖定通知發送失敗。' };
   }
 }
 

@@ -1,8 +1,11 @@
-import { ChannelType, EmbedBuilder, escapeMarkdown, type ChatInputCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
+import { ChannelType, EmbedBuilder, escapeMarkdown, type Guild } from 'discord.js';
 import { logFailure, UserError } from './errors.js';
 import { truncate } from './presentation.js';
 import type { ModerationCase, Store } from './store.js';
 import { deliverPunishmentNotice } from './punishment-notices.js';
+
+/** The same audit path serves guild commands and actor-bound recovery buttons. */
+export type AuditContext = { guildId: string; channelId: string; user: { id: string }; guild: Guild };
 
 const actionLabels: Record<string, string> = {
   warn: '警告', timeout: '禁言', untimeout: '解除禁言', kick: '踢出',
@@ -22,9 +25,10 @@ const actionLabels: Record<string, string> = {
 };
 
 export async function record(
-  command: ChatInputCommandInteraction<'cached'> | MessageContextMenuCommandInteraction<'cached'>, store: Store,
+  command: AuditContext, store: Store,
   action: string, userId: string | null, reason: string, details?: string,
   targetChannelId?: string,
+  options?: { noticeHandled?: boolean },
 ): Promise<string> {
   let entry: ModerationCase;
   try {
@@ -35,7 +39,11 @@ export async function record(
     return '\n⚠️ 操作已完成，但本機管理紀錄寫入失敗，請檢查儲存空間。';
   }
   // Member activity stays in the private ledger, even when a server log is configured.
-  const notice = await deliverPunishmentNotice(command, store, entry);
+  // Native thread closure is announced before archiving. Never reopen it to send
+  // a second notice; the confirmed action still receives its durable local case.
+  const notice = action === 'subarea-lock' && options?.noticeHandled
+    ? { sentChannelId: null, warning: '', filterFailed: false }
+    : await deliverPunishmentNotice(command, store, entry);
   const suffix = (entry.scope === 'server' ? `\n本服案件 #${entry.caseNumber}` : `\n成員紀錄 #${entry.caseNumber}`) + notice.warning;
   if (entry.scope !== 'server' || notice.filterFailed) return suffix;
   try {

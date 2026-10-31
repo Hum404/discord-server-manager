@@ -22,6 +22,7 @@ import { handlePunishmentConfig, handleSubareaNoticeConfig } from './punishment-
 import { canonicalCommandName, localizeCommandReferences } from './command-localizations.js';
 import { handleNotificationActionConfig } from './notification-action-config.js';
 import { NOTICE_ACTION_LABELS } from './notification-actions.js';
+import { handleSubareaLockRecovery } from './subarea-lock-recovery.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 type Context = {
@@ -372,6 +373,7 @@ export async function handleInteraction(interaction: Interaction, store: Store):
         await handleMessageAppCommand(interaction, store);
         return;
       }
+      if (await handleSubareaLockRecovery(interaction, store)) return;
       await handleAppealInteraction(interaction, store);
       return;
     }

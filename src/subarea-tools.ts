@@ -1,19 +1,22 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType, EmbedBuilder,
   OverwriteType, PermissionFlagsBits, escapeMarkdown,
-  type ChatInputCommandInteraction, type Client, type GuildMember, type MessageContextMenuCommandInteraction,
+  type ChatInputCommandInteraction, type Client, type Guild, type GuildMember, type MessageContextMenuCommandInteraction,
   type OverwriteData, type TextChannel, type PublicThreadChannel, type PrivateThreadChannel,
 } from 'discord.js';
-import { record } from './audit.js';
+import { record, type AuditContext } from './audit.js';
 import { UserError, logFailure } from './errors.js';
 import { requireBotPermissions, requirePrivateThreadAccess } from './permissions.js';
 import { truncate } from './presentation.js';
-import { Store, type Subarea } from './store.js';
+import { Store, type Subarea, type SubareaLock } from './store.js';
+import { deliverNativeSubareaLockNotice } from './punishment-notices.js';
+import { notifySubareaLockOwner } from './subarea-lock-recovery.js';
 
 type Command = ChatInputCommandInteraction<'cached'>;
 export type AreaInteraction = Command | MessageContextMenuCommandInteraction<'cached'>;
 export type ManagedChannel = TextChannel | PublicThreadChannel | PrivateThreadChannel;
 export interface ManagedAreaContext { actor: GuildMember; bot: GuildMember; channel: ManagedChannel; area: Subarea }
+type AreaRequest = { guild: Guild; guildId: string; user: { id: string }; channelId: string };
 type Baseline = { id: string; type: OverwriteType; allow: string; deny: string; existed?: boolean };
 const noMentions = { parse: [] as never[] };
 export const LOCK_PERMISSION_BITS = PermissionFlagsBits.SendMessages | PermissionFlagsBits.SendMessagesInThreads
@@ -44,10 +47,22 @@ function administrator(actor: GuildMember): boolean {
   return actor.id === actor.guild.ownerId || actor.permissions.has(PermissionFlagsBits.Administrator);
 }
 
+/** A privileged Bot must not provide an indirect way around a moderator's lock. */
+export function assertSubareaLockAllowsManagement(
+  channel: ManagedChannel, actor: GuildMember, store: Store,
+): void {
+  const lock = store.getSubareaLock(channel.guildId, channel.id);
+  if ((lock?.source === 'admin' || lock?.source === 'legacy'
+    || (!lock && channel.type !== ChannelType.GuildText && channel.locked)) && !administrator(actor)) {
+    throw new UserError('此子區由管理員鎖定，或鎖定來源尚待確認；請由伺服器管理員解除後再執行子區管理。');
+  }
+}
+
 /** Native thread ownership is adopted before this entry point by the thread adapter. */
 export async function refreshManagedArea(
-  command: AreaInteraction, store: Store, mode: 'manage' | 'owner' | 'owner-admin' = 'manage',
+  command: AreaRequest, store: Store, mode: 'manage' | 'owner' | 'owner-admin' = 'manage',
   channelId = command.channelId,
+  inspectProtectedLock = false,
 ): Promise<ManagedAreaContext> {
   await command.guild.roles.fetch();
   const [actor, bot, candidate] = await Promise.all([
@@ -55,7 +70,7 @@ export async function refreshManagedArea(
     command.guild.members.fetchMe({ force: true }),
     command.guild.channels.fetch(channelId, { force: true }),
   ]);
-  if (!candidate || candidate.guildId !== command.guildId
+  if (command.guild.id !== command.guildId || !candidate || candidate.id !== channelId || candidate.guildId !== command.guildId
     || (candidate.type !== ChannelType.GuildText && !isManagedThread(candidate))) {
     throw new UserError('請在已登記的文字子區或討論串內使用此指令。');
   }
@@ -72,6 +87,7 @@ export async function refreshManagedArea(
   }
   const privateAccess = await requirePrivateThreadAccess(channel, actor);
   if (privateAccess) throw new UserError(privateAccess);
+  if (!inspectProtectedLock) assertSubareaLockAllowsManagement(channel, actor, store);
   const latest = store.getSubarea(command.guildId, channel.id);
   const stillAllowed = latest && (actor.id === latest.ownerId || (mode !== 'owner' && administrator(actor))
     || (mode === 'manage' && !!store.getSubareaDelegate(command.guildId, channel.id, actor.id)));
@@ -176,21 +192,41 @@ function restoredOverwrites(channel: TextChannel, store: Store, area: Subarea, b
 
 /** Restore durable lock policy after startup; individual restrictions are reconciled afterwards. */
 export async function reconcileSubareaLocks(client: Client, store: Store): Promise<void> {
-  for (const lock of store.listSubareaLocks()) {
-    await managedAreaOperation(`${lock.guildId}:${lock.channelId}`, async () => {
+  for (const queued of store.listSubareaLocks()) {
+    await managedAreaOperation(`${queued.guildId}:${queued.channelId}`, async () => {
       try {
+        // The initial list may be stale while this operation waits for an unlock.
+        const lock = store.getSubareaLock(queued.guildId, queued.channelId);
+        if (!lock) return;
         const guild = await client.guilds.fetch(lock.guildId);
         const channel = await guild.channels.fetch(lock.channelId, { force: true });
         if (!channel) { store.deleteSubarea(lock.guildId, lock.channelId); return; }
-        if (channel.type !== ChannelType.GuildText) return;
         const area = store.getSubarea(lock.guildId, lock.channelId);
         if (!area) return;
         const bot = await guild.members.fetchMe({ force: true });
-        const missing = requireBotPermissions(bot, channel, [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageRoles]);
+        if (channel.type !== ChannelType.GuildText && !isManagedThread(channel)) return;
+        const missing = requireBotPermissions(bot, channel, [PermissionFlagsBits.ViewChannel,
+          channel.type === ChannelType.GuildText ? PermissionFlagsBits.ManageRoles : PermissionFlagsBits.ManageThreads]);
         if (missing) throw new UserError(missing);
-        await channel.permissionOverwrites.set(lockedOverwrites(channel, area, bot.id), '恢復子區鎖定狀態');
+        if (store.getSubareaLock(lock.guildId, lock.channelId)?.lockId !== lock.lockId) return;
+        if (channel.type === ChannelType.GuildText) {
+          await channel.permissionOverwrites.set(lockedOverwrites(channel, area, bot.id), '恢復子區鎖定狀態');
+          return;
+        }
+        const thread = channel as PublicThreadChannel | PrivateThreadChannel;
+        // Legacy rows are deliberately kept administrator-only: old records do
+        // not prove whether a creator was acting as an administrator at the time.
+        if (lock.mode !== 'thread-native') {
+          const converted = store.updateSubareaLockMetadata(lock.guildId, lock.channelId,
+            { mode: 'thread-native', originalArchived: lock.originalArchived ?? thread.archived,
+              originalLocked: lock.originalLocked ?? thread.locked }, lock.lockId);
+          if (!converted) return;
+        }
+        if (!thread.locked || !thread.archived) {
+          await thread.edit({ locked: true, archived: true, reason: '恢復子區原生鎖定及封存' });
+        }
       } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 10003) store.deleteSubarea(lock.guildId, lock.channelId);
+        if (error && typeof error === 'object' && 'code' in error && error.code === 10003) store.deleteSubarea(queued.guildId, queued.channelId);
         else logFailure('子區鎖定恢復失敗', error);
       }
     });
@@ -284,7 +320,7 @@ async function mutateMessage(command: Command, store: Store, action: 'pin' | 'un
 }
 
 async function manageDelegates(command: Command, store: Store, action: string): Promise<void> {
-  let current = await refreshManagedArea(command, store, action === 'delegates' ? 'manage' : 'owner-admin');
+  let current = await refreshManagedArea(command, store, action === 'delegates' ? 'manage' : 'owner-admin', command.channelId, action === 'delegates');
   if (action === 'delegates') {
     const delegates = store.listSubareaDelegates(command.guildId, current.channel.id);
     await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('此子區協管')
@@ -329,66 +365,163 @@ async function editArea(command: Command, store: Store, action: string): Promise
   await command.editReply({ content: description + suffix, allowedMentions: noMentions });
 }
 
-async function lockArea(command: Command, store: Store, locking: boolean, channelId: string): Promise<void> {
-  const current = await refreshManagedArea(command, store, 'manage', channelId);
-  const auditReason = `子區管理 ${command.user.id} ${locking ? '鎖定' : '解鎖'}`;
-  if (current.channel.type !== ChannelType.GuildText) {
-    botPermissions(current, [PermissionFlagsBits.ManageThreads,
-      ...(locking ? [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ReadMessageHistory] : [])]);
-    const existing = store.getSubareaLock(command.guildId, current.channel.id);
+export interface SubareaLockRequest {
+  guild: Guild;
+  userId: string;
+  channelId: string;
+  invocationChannelId?: string;
+}
+
+function lockSource(current: ManagedAreaContext): SubareaLock['source'] {
+  if (administrator(current.actor)) return 'admin';
+  return current.actor.id === current.area.ownerId ? 'owner' : 'delegate';
+}
+
+function verifyLockAuthority(
+  current: ManagedAreaContext, store: Store, expectedLockId?: string,
+): SubareaLock | null {
+  const lock = store.getSubareaLock(current.area.guildId, current.channel.id);
+  if (expectedLockId !== undefined && (!/^[a-f0-9]{16}$/.test(expectedLockId)
+    || !lock || lock.lockId !== expectedLockId || current.actor.id !== current.area.ownerId)) {
+    throw new UserError('這個解鎖按鈕已失效，請重新查看目前子區的鎖定狀態。');
+  }
+  if ((lock?.source === 'admin' || lock?.source === 'legacy') && !administrator(current.actor)) {
+    throw new UserError(lock.source === 'admin'
+      ? '此子區由管理員鎖定，只有伺服器擁有者或具原生「管理員」權限的人可以解除或變更鎖定。'
+      : '此為來源未確認的舊版鎖定，請由伺服器管理員確認後解除或重新鎖定。');
+  }
+  if (!lock && current.channel.type !== ChannelType.GuildText
+    && current.channel.locked && !administrator(current.actor)) {
+    throw new UserError('此討論串的原生鎖定沒有機器人來源紀錄，請由伺服器管理員確認後解除。');
+  }
+  return lock;
+}
+
+/** Shared by slash commands and persistent DM buttons; all checks run inside the area queue. */
+export async function changeSubareaLock(
+  request: SubareaLockRequest, store: Store, locking: boolean, expectedLockId?: string,
+): Promise<string> {
+  return managedAreaOperation(`${request.guild.id}:${request.channelId}`, async () => {
+    const command: AuditContext = { guild: request.guild, guildId: request.guild.id,
+      user: { id: request.userId }, channelId: request.invocationChannelId ?? request.channelId };
+    let current = await refreshManagedArea(command, store, 'manage', request.channelId, true);
+    let existing = verifyLockAuthority(current, store, expectedLockId);
+    const native = current.channel.type !== ChannelType.GuildText;
+    const source = lockSource(current);
+    const promoted = locking && !!existing && source === 'admin' && existing.source !== 'admin';
+    const mode = native ? 'thread-native' : 'text';
+    if (locking && existing && existing.mode === mode && !promoted
+      && (!native || (current.channel.type !== ChannelType.GuildText && current.channel.locked && current.channel.archived))) {
+      return `此子區已鎖定。${existing.source === 'admin' ? '此為管理員處分鎖，僅管理員可解除。' : ''}`;
+    }
+    if (!locking && !existing && (!native
+      || (current.channel.type !== ChannelType.GuildText && !current.channel.locked && !current.channel.archived))) {
+      return '此子區沒有需要解除的機器人鎖定紀錄，未變更權限。';
+    }
+    botPermissions(current, [native ? PermissionFlagsBits.ManageThreads : PermissionFlagsBits.ManageRoles]);
+    let noticeWarning = '';
+    if (locking && native) {
+      // An archived thread cannot receive a new notice. Announce the request first;
+      // delivery is best effort and never determines the actual lock result.
+      const notice = await deliverNativeSubareaLockNotice(command, store, request.channelId, source);
+      noticeWarning = notice.warning;
+      current = await refreshManagedArea(command, store, 'manage', request.channelId, true);
+      existing = verifyLockAuthority(current, store, expectedLockId);
+      if (lockSource(current) !== source) throw new UserError('你的管理權限已變更，未執行鎖定；請重新操作。');
+      botPermissions(current, [PermissionFlagsBits.ManageThreads]);
+    }
+    const auditReason = `子區管理 ${request.userId} ${locking ? '鎖定' : '解鎖'}`;
+    let stateWarning = '';
     if (locking) {
-      // Native archived/locked flags close the thread to its creator too. A durable
-      // local policy removes ordinary posts while leaving the creator's UI usable.
-      if (!existing) store.setSubareaLock(command.guildId, current.channel.id, '[]', current.actor.id);
+      const original = existing;
+      let lock: SubareaLock;
+      if (!existing) {
+        lock = store.setSubareaLock(command.guildId, request.channelId,
+          current.channel.type === ChannelType.GuildText
+            ? JSON.stringify(snapshot(current.channel, store, current.area, current.bot.id)) : '[]',
+          request.userId, { mode, source,
+            originalArchived: native && current.channel.type !== ChannelType.GuildText ? current.channel.archived : null,
+            originalLocked: native && current.channel.type !== ChannelType.GuildText ? current.channel.locked : null });
+      } else if (existing.mode !== mode || promoted) {
+        const updated = store.updateSubareaLockMetadata(command.guildId, request.channelId,
+          { mode, source: promoted ? 'admin' : existing.source, lockedBy: promoted ? request.userId : existing.lockedBy,
+            originalArchived: existing.originalArchived ?? (current.channel.type !== ChannelType.GuildText ? current.channel.archived : null),
+            originalLocked: existing.originalLocked ?? (current.channel.type !== ChannelType.GuildText ? current.channel.locked : null) },
+          existing.lockId);
+        if (!updated) throw new UserError('鎖定狀態已變更，請重新操作。');
+        lock = updated;
+      } else lock = existing;
       try {
+        if (current.channel.type !== ChannelType.GuildText) {
+          if (!current.channel.locked || !current.channel.archived) {
+            await current.channel.edit({ locked: true, archived: true, reason: auditReason });
+          }
+        } else {
+          await current.channel.permissionOverwrites.set(lockedOverwrites(current.channel, current.area, current.bot.id), auditReason);
+        }
+      } catch (error) {
+        if (!original) {
+          if (current.channel.type === ChannelType.GuildText) {
+            try {
+              await current.channel.permissionOverwrites.set(restoredOverwrites(current.channel, store, current.area, current.bot.id), '鎖定失敗，回復原權限');
+              store.deleteSubareaLock(command.guildId, request.channelId);
+            } catch (rollbackError) { logFailure('子區鎖定回復失敗，保留復原紀錄', rollbackError); }
+          } else store.deleteSubareaLock(command.guildId, request.channelId);
+        }
+        throw error;
+      }
+      // Refresh the row used for recovery; promoted locks invalidate older buttons.
+      existing = lock;
+    } else {
+      if (current.channel.type !== ChannelType.GuildText) {
         if (current.channel.archived || current.channel.locked) {
           await current.channel.edit({ locked: false, archived: false, reason: auditReason });
         }
-      } catch (error) {
-        if (!existing) store.deleteSubareaLock(command.guildId, current.channel.id);
-        throw error;
+      } else {
+        await current.channel.permissionOverwrites.set(restoredOverwrites(current.channel, store, current.area, current.bot.id), auditReason);
       }
-    } else {
-      // Older releases only set native flags and have no saved lock record.
-      if (current.channel.archived || current.channel.locked) {
-        await current.channel.edit({ locked: false, archived: false, reason: auditReason });
-      }
-      store.deleteSubareaLock(command.guildId, current.channel.id);
-    }
-  } else {
-    botPermissions(current, [PermissionFlagsBits.ManageRoles]);
-    const existing = store.getSubareaLock(command.guildId, current.channel.id);
-    if (locking) {
-      if (existing) { await command.editReply({ content: '此子區已鎖定。' }); return; }
-      const baseline = snapshot(current.channel, store, current.area, current.bot.id);
-      store.setSubareaLock(command.guildId, current.channel.id, JSON.stringify(baseline), current.actor.id);
-      try { await current.channel.permissionOverwrites.set(lockedOverwrites(current.channel, current.area, current.bot.id), auditReason); }
+      // Keep confirmed Discord success visible even if local cleanup needs repair.
+      try { store.deleteSubareaLock(command.guildId, request.channelId); }
       catch (error) {
-        try {
-          await current.channel.permissionOverwrites.set(restoredOverwrites(current.channel, store, current.area, current.bot.id), '鎖定失敗，回復原權限');
-          store.deleteSubareaLock(command.guildId, current.channel.id);
-        } catch (rollbackError) { logFailure('子區鎖定回復失敗，保留復原紀錄', rollbackError); }
-        throw error;
+        logFailure('子區已解鎖，但本機鎖定紀錄清理失敗', error);
+        stateWarning += '\n⚠️ 本機鎖定紀錄清理失敗；請管理員修復後再重啟，以免重新套用鎖定。';
       }
-    } else {
-      if (!existing) { await command.editReply({ content: '此子區沒有由機器人建立的鎖定紀錄，未變更權限。' }); return; }
-      await current.channel.permissionOverwrites.set(restoredOverwrites(current.channel, store, current.area, current.bot.id), auditReason);
-      store.deleteSubareaLock(command.guildId, current.channel.id);
-      for (const restriction of store.listSubareaRestrictions(command.guildId)) {
-        if (restriction.channelId === current.channel.id && !restriction.muted && !restriction.kicked) {
-          store.deleteSubareaRestriction(command.guildId, current.channel.id, restriction.userId);
+      try {
+        for (const restriction of store.listSubareaRestrictions(command.guildId)) {
+          if (restriction.channelId === request.channelId && !restriction.muted && !restriction.kicked) {
+            store.deleteSubareaRestriction(command.guildId, request.channelId, restriction.userId);
+          }
         }
+      } catch (error) {
+        logFailure('子區已解鎖，但已解除的個別限制清理失敗', error);
+        stateWarning += '\n⚠️ 已解除的個別限制清理失敗，請管理員檢查本機資料。';
       }
     }
-  }
-  const description = locking
-    ? current.channel.type === ChannelType.GuildText
-      ? `已鎖定子區 <#${current.channel.id}>，建立者仍可發言及使用解鎖指令。`
-      : `已鎖定子區 <#${current.channel.id}>。Bot 在線時會刪除其他普通成員的新訊息與反應，建立者與管理員仍可發言。`
-    : `已解鎖子區 <#${current.channel.id}>；既有個別禁言仍會保留。`;
-  const suffix = await record(command, store, locking ? 'subarea-lock' : 'subarea-unlock', null, description,
-    `子區 ${current.channel.id}`, current.channel.id);
-  await command.editReply({ content: description + suffix, allowedMentions: noMentions });
+    const description = locking
+      ? current.channel.type === ChannelType.GuildText
+        ? `已鎖定子區 <#${request.channelId}>，建立者仍可發言及使用解鎖指令。`
+        : `已鎖定並封存子區 <#${request.channelId}>。Discord 原生鎖定在 Bot 離線時仍然有效；一般建立者也無法在區內發言。`
+      : `已解鎖子區 <#${request.channelId}>；既有個別禁言仍會保留。`;
+    const authority = locking && existing?.source === 'admin' ? '\n此為管理員處分鎖，僅伺服器擁有者或具原生「管理員」權限的人可以解除。' : '';
+    let suffix: string;
+    try {
+      suffix = await record(command, store, locking ? 'subarea-lock' : 'subarea-unlock', null,
+        description + authority, `子區 ${request.channelId} · 鎖定來源 ${existing?.source ?? '未登記原生鎖定'}`,
+        request.channelId, { noticeHandled: locking && native });
+    } catch (error) {
+      logFailure('子區鎖定操作已完成，但紀錄或通知處理失敗', error);
+      suffix = '\n⚠️ 操作已完成，但紀錄或通知處理失敗，請管理員檢查。';
+    }
+    if (locking && existing) {
+      try { noticeWarning += await notifySubareaLockOwner(request.guild, store, existing, current.area.ownerId); }
+      catch (error) {
+        logFailure('子區鎖定已完成，但建立者私訊失敗', error);
+        noticeWarning += '\n⚠️ 鎖定已完成，但建立者私訊發送失敗。';
+      }
+    }
+    const recovery = locking ? `\n可在本伺服器其他頻道使用 /子區 解鎖 頻道編號:${request.channelId}。` : '';
+    return description + authority + suffix + noticeWarning + stateWarning + recovery;
+  });
 }
 
 async function deleteArea(command: Command, store: Store): Promise<void> {
@@ -431,13 +564,19 @@ export async function handleSubareaTools(command: Command, store: Store): Promis
   if (!toolNames.has(action)) return false;
   const targetId = action === 'lock' || action === 'unlock'
     ? resolveSubareaLockTarget(command) : command.channelId;
+  if (action === 'lock' || action === 'unlock') {
+    const content = await changeSubareaLock({ guild: command.guild, userId: command.user.id,
+      channelId: targetId, invocationChannelId: command.channelId }, store, action === 'lock');
+    try { await command.editReply({ content, embeds: [], components: [], allowedMentions: noMentions }); }
+    catch (error) { logFailure('子區鎖定處理完成，但互動回覆失敗', error); }
+    return true;
+  }
   await managedAreaOperation(`${command.guildId}:${targetId}`, async () => {
     if (action === 'pin' || action === 'unpin' || action === 'delete-message') return mutateMessage(command, store, action);
     if (action === 'delegate' || action === 'undelegate' || action === 'delegates') return manageDelegates(command, store, action);
     if (action === 'rename' || action === 'slowmode') return editArea(command, store, action);
-    if (action === 'lock' || action === 'unlock') return lockArea(command, store, action === 'lock', targetId);
     if (action === 'delete') return deleteArea(command, store);
-    const current = await refreshManagedArea(command, store);
+    const current = await refreshManagedArea(command, store, 'manage', command.channelId, true);
     const lock = !!store.getSubareaLock(command.guildId, current.channel.id)
       || (current.channel.type !== ChannelType.GuildText && current.channel.locked && current.channel.archived);
     await command.editReply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('子區管理資訊').addFields(
@@ -445,6 +584,11 @@ export async function handleSubareaTools(command: Command, store: Store): Promis
       { name: '類型', value: current.channel.type === ChannelType.GuildText ? '獨立文字頻道' : '討論串／論壇帖子' },
       { name: '協管', value: String(store.listSubareaDelegates(command.guildId, current.channel.id).length), inline: true },
       { name: '狀態', value: lock ? '已鎖定' : '未鎖定', inline: true },
+      { name: '鎖定來源', value: (() => {
+        const saved = store.getSubareaLock(command.guildId, current.channel.id);
+        return saved ? ({ admin: '管理員處分鎖', owner: '建立者', delegate: '協管', legacy: '舊版來源待管理員確認' })[saved.source]
+          : lock ? '未登記原生鎖定，須管理員確認' : '無';
+      })() },
       { name: '慢速模式', value: `${current.channel.rateLimitPerUser ?? 0} 秒`, inline: true },
     )], allowedMentions: noMentions });
   });

@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { APPEALABLE_ACTIONS, MANAGEMENT_SCOPES, type ManagementScope } from './domain.js';
@@ -92,7 +93,16 @@ export interface SubareaLock {
   overwrites: string;
   lockedBy: string;
   createdAt: string;
+  lockId: string;
+  mode: 'legacy' | 'text' | 'thread-native';
+  source: 'legacy' | 'owner' | 'delegate' | 'admin';
+  originalArchived: boolean | null;
+  originalLocked: boolean | null;
 }
+
+export type SubareaLockMetadata = Pick<SubareaLock, 'mode' | 'source'>
+  & Partial<Pick<SubareaLock, 'originalArchived' | 'originalLocked'>>;
+export type SubareaLockMetadataPatch = Partial<SubareaLockMetadata & Pick<SubareaLock, 'lockedBy'>>;
 
 export interface SubareaRestriction {
   guildId: string;
@@ -122,7 +132,9 @@ const appealColumns = `id, guild_id AS guildId, case_id AS caseId, user_id AS us
   channel_id AS channelId, message_id AS messageId`;
 const subareaColumns = 'guild_id AS guildId, channel_id AS channelId, owner_id AS ownerId, created_at AS createdAt';
 const delegateColumns = 'guild_id AS guildId, channel_id AS channelId, user_id AS userId, granted_by AS grantedBy, created_at AS createdAt';
-const lockColumns = 'guild_id AS guildId, channel_id AS channelId, overwrites, locked_by AS lockedBy, created_at AS createdAt';
+const lockColumns = `guild_id AS guildId, channel_id AS channelId, overwrites, locked_by AS lockedBy,
+  created_at AS createdAt, lock_id AS lockId, mode, source,
+  original_archived AS originalArchived, original_locked AS originalLocked`;
 const restrictionColumns = `guild_id AS guildId, channel_id AS channelId, user_id AS userId, muted, kicked,
   original_allow AS originalAllow, original_deny AS originalDeny, moderator_id AS moderatorId,
   reason, updated_at AS updatedAt`;
@@ -214,6 +226,46 @@ function lockOverwrites(value: string): void {
     permissionBits(overwrite.deny);
     seen.add(overwrite.id as string);
   }
+}
+
+function lockIdentifier(value: string): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{16}$/.test(value)) {
+    throw new TypeError('Lock identifier must contain 16 lowercase hexadecimal characters.');
+  }
+  return value;
+}
+
+function validateLockMetadata(value: SubareaLockMetadataPatch): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some((key) => !['mode', 'source', 'lockedBy', 'originalArchived', 'originalLocked'].includes(key))) {
+    throw new TypeError('Lock metadata must contain only supported fields.');
+  }
+  if (value.mode !== undefined && !['legacy', 'text', 'thread-native'].includes(value.mode)) {
+    throw new TypeError('Unknown lock mode.');
+  }
+  if (value.source !== undefined && !['legacy', 'owner', 'delegate', 'admin'].includes(value.source)) {
+    throw new TypeError('Unknown lock source.');
+  }
+  if (value.lockedBy !== undefined) identifier(value.lockedBy);
+  for (const flag of [value.originalArchived, value.originalLocked]) {
+    if (flag !== undefined && flag !== null && typeof flag !== 'boolean') {
+      throw new TypeError('Original thread flags must be boolean or null.');
+    }
+  }
+}
+
+function hydrateSubareaLock(row: unknown): SubareaLock | null {
+  if (row === undefined) return null;
+  const value = row as Omit<SubareaLock, 'originalArchived' | 'originalLocked'>
+    & { originalArchived: number | null; originalLocked: number | null };
+  lockIdentifier(value.lockId);
+  for (const flag of [value.originalArchived, value.originalLocked]) {
+    if (flag !== null && flag !== 0 && flag !== 1) throw new TypeError('Invalid stored original thread flag.');
+  }
+  const result = { ...value, originalArchived: value.originalArchived === null ? null : value.originalArchived === 1,
+    originalLocked: value.originalLocked === null ? null : value.originalLocked === 1 };
+  validateLockMetadata({ mode: result.mode, source: result.source });
+  return result;
 }
 
 function hydrateRestriction(row: unknown): SubareaRestriction | null {
@@ -359,10 +411,40 @@ export class Store {
           this.db.exec(`ALTER TABLE guild_settings ADD COLUMN ${column} ${definition}`);
         }
       }
+      this.migrateSubareaLockMetadata();
       this.migrateCaseNumbers();
       this.migrateAuditScopes();
     } catch (error) {
       this.db.close();
+      throw error;
+    }
+  }
+
+  /** Preserve old permission snapshots while adding durable recovery and authority metadata. */
+  private migrateSubareaLockMetadata(): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const columns = this.db.prepare('PRAGMA table_info(subarea_locks)').all() as Array<{ name: string }>;
+      const additions = [
+        ['lock_id', "TEXT NOT NULL DEFAULT '' CHECK(length(lock_id) IN (0, 16) AND lock_id NOT GLOB '*[^0-9a-f]*')"],
+        ['mode', "TEXT NOT NULL DEFAULT 'legacy' CHECK(mode IN ('legacy', 'text', 'thread-native'))"],
+        ['source', "TEXT NOT NULL DEFAULT 'legacy' CHECK(source IN ('legacy', 'owner', 'delegate', 'admin'))"],
+        ['original_archived', 'INTEGER CHECK(original_archived IN (0, 1))'],
+        ['original_locked', 'INTEGER CHECK(original_locked IN (0, 1))'],
+      ] as const;
+      for (const [name, definition] of additions) {
+        if (!columns.some((column) => column.name === name)) {
+          this.db.exec(`ALTER TABLE subarea_locks ADD COLUMN ${name} ${definition}`);
+        }
+      }
+      const pending = this.db.prepare("SELECT guild_id, channel_id FROM subarea_locks WHERE lock_id = ''")
+        .all() as Array<{ guild_id: string; channel_id: string }>;
+      const assignId = this.db.prepare("UPDATE subarea_locks SET lock_id = ? WHERE guild_id = ? AND channel_id = ? AND lock_id = ''");
+      for (const row of pending) assignId.run(randomBytes(8).toString('hex'), row.guild_id, row.channel_id);
+      this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS subarea_locks_lock_id ON subarea_locks(lock_id)');
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
       throw error;
     }
   }
@@ -948,22 +1030,49 @@ export class Store {
   }
 
   /** First write wins so re-locking cannot replace the original permission baseline. */
-  setSubareaLock(guildId: string, channelId: string, overwrites: string, lockedBy: string): SubareaLock {
+  setSubareaLock(guildId: string, channelId: string, overwrites: string, lockedBy: string,
+    metadata?: SubareaLockMetadata): SubareaLock {
     identifier(guildId);
     identifier(channelId);
     identifier(lockedBy);
     lockOverwrites(overwrites);
-    this.db.prepare(`INSERT INTO subarea_locks(guild_id, channel_id, overwrites, locked_by, created_at)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(guild_id, channel_id) DO NOTHING`)
-      .run(guildId, channelId, overwrites, lockedBy, new Date().toISOString());
+    const details: SubareaLockMetadata = metadata === undefined ? { mode: 'legacy', source: 'legacy' } : metadata;
+    validateLockMetadata(details);
+    if (details.mode === undefined || details.source === undefined) throw new TypeError('New lock metadata requires mode and source.');
+    this.db.prepare(`INSERT INTO subarea_locks(guild_id, channel_id, overwrites, locked_by, created_at,
+      lock_id, mode, source, original_archived, original_locked)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, channel_id) DO NOTHING`)
+      .run(guildId, channelId, overwrites, lockedBy, new Date().toISOString(), randomBytes(8).toString('hex'),
+        details.mode, details.source, details.originalArchived == null ? null : Number(details.originalArchived),
+        details.originalLocked == null ? null : Number(details.originalLocked));
     return this.getSubareaLock(guildId, channelId)!;
+  }
+
+  /** Preserve the baseline and invalidate every recovery control for the previous generation. */
+  updateSubareaLockMetadata(guildId: string, channelId: string, patch: SubareaLockMetadataPatch,
+    expectedLockId?: string): SubareaLock | null {
+    identifier(guildId);
+    identifier(channelId);
+    validateLockMetadata(patch);
+    if (expectedLockId !== undefined) lockIdentifier(expectedLockId);
+    const current = this.getSubareaLock(guildId, channelId);
+    if (!current || (expectedLockId !== undefined && current.lockId !== expectedLockId)) return null;
+    const archived = patch.originalArchived === undefined ? current.originalArchived : patch.originalArchived;
+    const locked = patch.originalLocked === undefined ? current.originalLocked : patch.originalLocked;
+    const changed = this.db.prepare(`UPDATE subarea_locks SET mode = ?, source = ?, locked_by = ?,
+      original_archived = ?, original_locked = ?, lock_id = ?
+      WHERE guild_id = ? AND channel_id = ? AND lock_id = ?`)
+      .run(patch.mode ?? current.mode, patch.source ?? current.source, patch.lockedBy ?? current.lockedBy,
+        archived === null ? null : Number(archived), locked === null ? null : Number(locked),
+        randomBytes(8).toString('hex'), guildId, channelId, current.lockId).changes;
+    return changed ? this.getSubareaLock(guildId, channelId) : null;
   }
 
   getSubareaLock(guildId: string, channelId: string): SubareaLock | null {
     identifier(guildId);
     identifier(channelId);
-    return this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks WHERE guild_id = ? AND channel_id = ?`)
-      .get(guildId, channelId) as unknown as SubareaLock | undefined ?? null;
+    return hydrateSubareaLock(this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks WHERE guild_id = ? AND channel_id = ?`)
+      .get(guildId, channelId));
   }
 
   listSubareaLocks(guildId?: string): SubareaLock[] {
@@ -971,7 +1080,7 @@ export class Store {
     return (guildId === undefined
       ? this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks ORDER BY guild_id, channel_id`).all()
       : this.db.prepare(`SELECT ${lockColumns} FROM subarea_locks WHERE guild_id = ? ORDER BY channel_id`).all(guildId)
-    ) as unknown as SubareaLock[];
+    ).map((row) => hydrateSubareaLock(row)!);
   }
 
   deleteSubareaLock(guildId: string, channelId: string): boolean {
