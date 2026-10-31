@@ -49,9 +49,9 @@
 
 ## 版本與更新
 
-每個版本的更新日誌、升級注意事項及原始碼下載，統一放在 [GitHub Releases](https://github.com/Hum404/discord-server-manager/releases)。更新前請先閱讀目標版本的說明。
+Bot 功能與修正的更新日誌、升級注意事項及原始碼下載，統一放在 [GitHub Releases](https://github.com/Hum404/discord-server-manager/releases)。文件或發布頁面調整不另發版。更新前請先閱讀目標版本的說明。
 
-每個 Release 的 **Assets** 都附上該版本的原始碼 ZIP 與 SHA-256 校驗檔。早期更新以 `history-日期-序號` 補登，對應當時的實際提交；新版本使用 `v` 開頭的版本號。
+每個 Release 的 **Assets** 都附上該版本的原始碼 ZIP 與 SHA-256 校驗檔。早期 Bot 更新以 `history-日期-序號` 補登，對應當時的實際提交；新版本使用 `v` 開頭的版本號。
 
 ## 使用前留意
 
