@@ -51,6 +51,8 @@
 
 每個版本的更新日誌、升級注意事項及原始碼下載，統一放在 [GitHub Releases](https://github.com/Hum404/discord-server-manager/releases)。更新前請先閱讀目標版本的說明。
 
+每個 Release 的 **Assets** 都附上該版本的原始碼 ZIP 與 SHA-256 校驗檔。早期更新以 `history-日期-序號` 補登，對應當時的實際提交；新版本使用 `v` 開頭的版本號。
+
 ## 使用前留意
 
 - 討論串內的**個別成員禁言**仍靠 Bot 刪除新訊息，需要 Bot 在線；與整個討論串的原生鎖定不同。

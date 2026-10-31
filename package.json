@@ -1,6 +1,6 @@
 {
   "name": "discord-server-manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "繁體中文 Discord 伺服器管理機器人",
   "type": "module",
