@@ -4,7 +4,7 @@
 
 主要介面使用繁體中文，也能用簡體字搜尋及執行指令。
 
-[部署指南](docs/installation.md) · [指令手冊](docs/commands.md) · [更新紀錄](CHANGELOG.md) · [問題回報](https://github.com/Hum404/discord-server-manager/issues)
+[部署指南](docs/installation.md) · [指令手冊](docs/commands.md) · [版本與更新](https://github.com/Hum404/discord-server-manager/releases) · [問題回報](https://github.com/Hum404/discord-server-manager/issues)
 
 ## 功能
 
@@ -44,14 +44,12 @@
 部署時只需填入 Bot Token，Application ID 由程式取得；啟動後會自動註冊指令。資料使用 SQLite 保存，無須另外架設資料庫。
 
 - **第一次安裝：** [安裝與設定](docs/installation.md)
-- **下載原始碼：** [ZIP](https://github.com/Hum404/discord-server-manager/archive/refs/heads/main.zip)
+- **最新版本與原始碼：** [Releases](https://github.com/Hum404/discord-server-manager/releases/latest)
 - **更新現有主機：** [阿里雲部署更新](docs/deployment.md)，依序停止、備份、下載、編譯、啟動
 
-## 最近更新
+## 版本與更新
 
-討論串鎖定已改用 Discord 原生的**鎖定＋封存**，Bot 離線後仍生效。一般建立者也會暫時無法發言，可依通知設定收到私訊解鎖按鈕，或從其他頻道指定子區解鎖。
-
-管理員處分鎖會記錄來源，通知失敗也會與實際操作結果分開回報。完整變更見[更新紀錄](CHANGELOG.md)。
+每個版本的更新日誌、升級注意事項及原始碼下載，統一放在 [GitHub Releases](https://github.com/Hum404/discord-server-manager/releases)。更新前請先閱讀目標版本的說明。
 
 ## 使用前留意
 
@@ -68,7 +66,7 @@
 | [指令與權限](docs/commands.md) | 完整指令、子區管理、通知、授權及申訴 |
 | [部署更新](docs/deployment.md) | 現有阿里雲主機的備份與更新步驟 |
 | [常見問題](docs/troubleshooting.md) | 指令、權限、通知及連線問題 |
-| [更新紀錄](CHANGELOG.md) | 依日期整理的功能變更 |
+| [Releases](https://github.com/Hum404/discord-server-manager/releases) | 各版本的更新日誌與原始碼下載 |
 | [隱私政策](PRIVACY_POLICY.md) · [服務條款](TERMS_OF_SERVICE.md) | 資料處理與使用規則 |
 
 程式使用 TypeScript、discord.js 14 與 SQLite。測試與編譯指令見[開發檢查](docs/installation.md#檢查與測試)。

@@ -4,6 +4,8 @@
 
 適用於現有阿里雲主機的更新步驟；首次安裝請先閱讀[安裝指南](installation.md)。
 
+各版本的變更與升級注意事項見 [GitHub Releases](https://github.com/Hum404/discord-server-manager/releases)，更新前請先閱讀目標版本的說明。
+
 ## 阿里雲現有部署更新
 
 以下沿用 `/opt/discord-manager`、`discordbot` 帳號及 `discord-manager` systemd 服務。每次只執行一個命令區塊；保留原本 `.env`，不需要重新填 Token 或 ID。本次鎖定升級會自動遷移 SQLite 鎖定紀錄，沿用目前通知設定；請確認 Bot 原有 Manage Threads 權限仍有效。完整更新順序為**停止、備份、下載、編譯、啟動**。若前一步執行失敗，先處理錯誤再繼續下一步。
